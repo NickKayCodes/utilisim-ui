@@ -7,9 +7,13 @@ const App = () => {
       <nav className="nav-links">
         <Link to="/">Home</Link>
         <Link to="/login">Login</Link>
+        <Link to="/register">Register</Link>
       </nav>
       <h1>Welcome to Utilisim</h1>
-      <p>This is a utility application for financial literacy through debt management.</p>
+      <p>
+        This is a utility application for financial literacy through debt
+        management.
+      </p>
     </div>
   );
 };
