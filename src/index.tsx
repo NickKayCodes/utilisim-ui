@@ -1,14 +1,21 @@
-import React from 'react';
-import ReactDOM from 'react-dom/client';
-import { RouterProvider } from 'react-router-dom';
-import { riverflow } from './river/Flow';
+import { StrictMode } from 'react';
+import { createRoot } from 'react-dom/client';
+import { BrowserRouter } from 'react-router-dom';
+import { App } from './App';
+import { AuthProvider } from './auth/AuthProvider';
+import './styles.css';
 
-const rootEl = document.getElementById('root');
-if (rootEl) {
-  const root = ReactDOM.createRoot(rootEl);
-  root.render(
-    <React.StrictMode>
-      <RouterProvider router={riverflow} />
-    </React.StrictMode>,
-  );
+const container = document.getElementById('root');
+if (!container) {
+  throw new Error('Root element #root was not found');
 }
+
+createRoot(container).render(
+  <StrictMode>
+    <BrowserRouter>
+      <AuthProvider>
+        <App />
+      </AuthProvider>
+    </BrowserRouter>
+  </StrictMode>,
+);
