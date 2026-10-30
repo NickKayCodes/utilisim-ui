@@ -46,7 +46,7 @@ beforeEach(() => {
 });
 
 describe('ScenariosPage', () => {
-  it('lists saved scenarios and shares the warning', async () => {
+  it('lists saved scenarios and states that they are private', async () => {
     renderScenarios();
 
     await waitFor(() => expect(screen.getByText('Aggressive payoff')).toBeInTheDocument());
@@ -57,7 +57,7 @@ describe('ScenariosPage', () => {
     ).toBe(true);
     expect(screen.getByText('$100.00')).toBeInTheDocument();
     expect(screen.getByText('$500.00')).toBeInTheDocument();
-    expect(screen.getByText(/does not scope scenarios to a user/)).toBeInTheDocument();
+    expect(screen.getByText(/private to your account/)).toBeInTheDocument();
     expect(screen.getByText(/2026/)).toBeInTheDocument();
   });
 

@@ -67,8 +67,7 @@ export function RegisterPage() {
           <li>Keep the scenarios worth revisiting</li>
         </ul>
         <p className="auth-footnote">
-          Your account data is scoped to you. Scenarios are currently shared — see the note in the
-          Scenarios page.
+          Your account data and scenarios are private to you.
         </p>
       </aside>
 

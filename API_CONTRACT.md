@@ -103,18 +103,17 @@ RegisterPage → useAuth().register(username, email, password)
 Any authenticated request that returns `401` clears the session and notifies `AuthProvider`,
 which flips the status to anonymous; `RequireAuth` then redirects to `/login`.
 
-**A stale token does not produce `401`.** The API returns `500` for a malformed, expired, or
-wrongly signed token (see §3). Because `lib/api.ts` only clears on `401`, the session survives and
-every page keeps failing until the user logs out manually. Treat this as a known phase-1 defect,
-not as intended session behaviour.
+**A stale token now produces `401`.** Malformed, expired, and wrongly signed tokens are treated as
+anonymous by the API, so the next request clears storage and returns the user to `/login`. This is
+what makes restart-induced expiry recoverable.
 
 ### Logout and expiry
 
 Logout is client-side only: remove both keys, set the user to `null`. There is no logout endpoint,
-no refresh token, and no expiry timer. Tokens last about 10 days. Because the API signs tokens with
-a key generated at startup, restarting the backend invalidates every session. The next request
-returns `500` (not `401`), so the UI does **not** sign out and the user must log out manually.
-See §3.
+no refresh token, and no expiry timer. Tokens last about 10 days. The backend signs with
+`JWT_SECRET` when configured, so tokens survive a restart; without it the key is ephemeral and the
+next restart invalidates every session, which now results in a clean `401` sign-out rather than a
+`500` lockout. See §3.
 
 ---
 
@@ -147,7 +146,7 @@ Pages render `errorMessage(error)` verbatim in an `Alert`. The UI does not rewri
 | `401` | `{ "error": "Unauthorized", "message": "..." }` | Login page shows it; authenticated calls sign out |
 | `403` | `{ "error": "Forbidden", "message": "..." }` | Show the message; no role-aware UI exists |
 | `404` | often **empty** for scenario ids | Show a generic failure; never assume JSON |
-| `500` | `{ "error": "Internal Server Error", "message": "..." }` **or** Spring's default `timestamp/status/error/trace` body | Show the message; see the special cases below |
+| `500` | `{ "error": "Internal Server Error", "message": "Unexpected error" }` | Show the message; never a stack trace |
 
 **Tome delete is special.** `DELETE /api/tomes/{id}` returns `500` for a missing or foreign id,
 not `404`/`403`. `AccountsPage` surfaces the message and leaves the row in place.
@@ -156,10 +155,12 @@ not `404`/`403`. `AccountsPage` surfaces the message and leaves the row in place
 blank) fails before the estimate runs. `AccountsPage` shows the error and the account is not
 created. The "estimated APR" display path is therefore unreachable today.
 
-**Invalid tokens are a `500`.** A malformed, expired, or wrongly signed bearer token returns
-Spring's default error body with a `trace`, not `401`/`{error,message}`. `extractMessage` falls
-back to `error` (the text `Internal Server Error`), and the session is **not** cleared. Logging
-out manually is the only recovery.
+**Invalid tokens are a `401`.** A malformed, expired, or wrongly signed bearer token is treated as
+anonymous by the API. `lib/api.ts` clears the session, notifies `AuthProvider`, and `RequireAuth`
+redirects to `/login`. No `trace` or internal text reaches the client.
+
+**5xx bodies are generic.** The API returns
+`{"error":"Internal Server Error","message":"Unexpected error"}` and never a stack trace.
 
 **Scenario misses are empty.** `GET`/`PUT`/`DELETE /api/archive/scenarios/{id}` return `404` with
 no body, so `extractMessage` falls back to the status line.
@@ -225,7 +226,7 @@ interface TomeRequest {
 ```ts
 interface Scenario {
   id: string;
-  userId: string | null;     // always null today: scenarios are global
+  userId: string | null;     // owner id; set by the server from the token
   name: string;
   strategy: string;
   extraPayment: number;
@@ -369,12 +370,13 @@ foreign ids return `500`; the row stays visible.
 
 ### `GET /api/archive/scenarios`
 
-Authenticated. Returns `Scenario[]` — **all scenarios in the database**, not just the current
-user's. Also used as the session-validation call on reload.
+Authenticated. Returns `Scenario[]` scoped to the current user. Also used as the
+session-validation call on reload.
 
 ### `POST /api/archive/scenarios`
 
-Authenticated. Body is `ScenarioInput`.
+Authenticated. Body is `ScenarioInput`. The server sets `id`, `userId`, and the timestamps; any
+client-supplied values for those fields are ignored/cleared.
 
 ```json
 { "name": "Example scenario", "strategy": "SNOWBALL", "extraPayment": 25, "lumpSumPayment": 100 }
@@ -385,7 +387,8 @@ simulation.
 
 ### `DELETE /api/archive/scenarios/{id}`
 
-Authenticated. `204` on success, `404` with an empty body when the id is unknown.
+Authenticated. `204` on success. `404` with an empty body when the id is unknown **or owned by
+another user**.
 
 ### `POST /api/assemble/run`
 
@@ -547,8 +550,9 @@ them; the UI only lists, creates, and deletes scenarios.
    under `utilisim.lastRun` for the Dashboard. Clearing the tab loses it.
 6. **Scenarios are presets, not results.** Only name, strategy, extra payment, and lump sum are
    stored. Balance, APR, and term are always re-entered.
-7. **Scenarios are global.** Every authenticated user can see, edit, and delete every scenario.
-   The Scenarios page shows a warning banner; do not present the list as private.
+7. **Scenarios are owner-scoped.** The API sets `userId` from the token and returns only the
+   caller's rows; foreign ids are indistinguishable from missing ones (`404`). The Scenarios page
+   states that the list is private.
 8. **No account editing.** There is no `PUT /api/tomes/{id}`. The UI offers delete + re-create
    and says so on the Accounts page.
 9. **`username` is the email.** Both login and register responses echo the email in `username`.
@@ -564,12 +568,12 @@ them; the UI only lists, creates, and deletes scenarios.
 14. **`204` is `undefined`.** Services type delete calls as `api<void>`; do not attempt to read a
     body from a successful delete.
 15. **No refresh flow.** There is no refresh endpoint. A `401` ends in a client-side sign-out;
-    expiry or a backend restart produces a `500` and leaves the session in place (§3).
+    expiry or a backend restart now produces that `401` and clears the session (§3).
 16. **The term cap is hidden.** A result can report `COMPLETED` with a non-zero final
     `remainingBalance` after `termMonths * 2` rows. Do not label such a run "paid off" without
     checking the last row.
-17. **Scenario ownership is absent.** The API never sets `userId`; every user sees every scenario.
-    The Scenarios page warns about this. Do not present scenarios as private.
+17. **A client-supplied `userId` is ignored.** Scenario ownership comes from the token; POST
+    clears any `id` in the body so a create cannot overwrite an existing row.
 18. **Blank APR is a failed create, not a fallback.** See §3 and §5. This is the most likely
     user-visible `500` in the Accounts form.
 19. **The recommender is effectively constant.** Because percentages are compared against `0.15`,

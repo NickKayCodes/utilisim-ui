@@ -118,9 +118,8 @@ export function ScenariosPage() {
         subtitle="Reusable strategy presets. They store the strategy and extra payments, not a balance."
       />
 
-      <Alert tone="warning">
-        The API does not scope scenarios to a user — every scenario in the database is visible to
-        every account. Treat this list as shared for now.
+      <Alert tone="info">
+        Scenarios are private to your account — only you can see, change or delete them.
       </Alert>
 
       {actionError ? <Alert>{actionError}</Alert> : null}
