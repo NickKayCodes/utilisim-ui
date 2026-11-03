@@ -151,9 +151,9 @@ Pages render `errorMessage(error)` verbatim in an `Alert`. The UI does not rewri
 **Tome delete is special.** `DELETE /api/tomes/{id}` returns `500` for a missing or foreign id,
 not `404`/`403`. `AccountsPage` surfaces the message and leaves the row in place.
 
-**Blank APR is a `500`.** `POST /api/tomes` with `apr: null` (the UI sends this when the field is
-blank) fails before the estimate runs. `AccountsPage` shows the error and the account is not
-created. The "estimated APR" display path is therefore unreachable today.
+**A blank APR is now accepted.** `POST /api/tomes` with `apr: null` stores the documented 16.0000
+percent estimate. `AccountsPage` labels the field optional; the account is created and
+`estimatedApr` is returned.
 
 **Invalid tokens are a `401`.** A malformed, expired, or wrongly signed bearer token is treated as
 anonymous by the API. `lib/api.ts` clears the session, notifies `AuthProvider`, and `RequireAuth`
@@ -202,9 +202,10 @@ interface Tome {
   userId: string | null;
   name: string;
   currentBalance: number;
-  apr: number | null;        // percentage, e.g. 19.99; always numeric in responses today
-  estimatedApr: number;      // percentage; mirrors apr because the estimate path is broken
+  apr: number | null;        // percentage, e.g. 19.99; null when unknown
+  estimatedApr: number;      // percentage; 16.00 when apr is absent
   minimumDebtPayment: number;
+  currentPayment: number;    // what the user pays today; defaults to the minimum
   creditLimit: number;
   type: string;              // free-form; UI offers CREDIT_CARD, STUDENT_LOAN, ...
   createdAt: string;
@@ -214,8 +215,9 @@ interface Tome {
 interface TomeRequest {
   name: string;
   currentBalance: number;
-  apr: number | null;        // null is typed, but the server currently returns 500
+  apr: number | null;        // null stores the 16% estimate
   minimumDebtPayment: number;
+  currentPayment?: number | null; // optional; the server stores the minimum
   creditLimit: number;
   type: string;
 }
@@ -251,7 +253,7 @@ type StrategyType = 'SNOWBALL' | 'AVALANCHE' | 'HYBRID' | 'CUSTOM' | 'MINIMUM_ON
 interface SimulationInput {
   principal: number;
   interestRate: number;      // annual decimal: 0.1999 = 19.99%
-  termMonths: number;
+  termMonths: number;        // planning horizon; a plan that needs longer comes back FAILED
   minimumPayment: number;
   extraPayment: number;
   lumpSumPayment: number;
@@ -271,14 +273,15 @@ interface SimulationResult {
   id: string;
   simulationInputId: string | null;
   userId: string | null;
-  status: 'RUNNING' | 'COMPLETED' | 'FAILED';
+  status: 'RUNNING' | 'COMPLETED' | 'FAILED';  // COMPLETED only when the balance hits zero
   startedAt: string;
   completedAt: string | null;
   totalInterestPaid: number;
   totalPrincipalPaid: number;
-  monthsToPayoff: number;
-  payoffDate: string;
+  monthsToPayoff: number;    // 0 when FAILED
+  payoffDate: string | null; // null when FAILED
   savingsComparedToBaseline: number;
+  remainingBalance: number;  // > 0 when FAILED
   schedule: AmortizationEntry[];
   archivedAt: string | null;
   ledgerEntryId: string | null;
@@ -292,10 +295,10 @@ interface DebtSnapshot {
   tomeId: string;
   accountName: string;
   currentBalance: number;
-  apr: number;
-  estimatedApr: number;
+  apr: number;               // annual percentage: 19.99
+  estimatedApr: number;      // annual percentage, used when apr is 0
   minimumPayment: number;
-  interestRate: number;      // the UI sends the percentage APR here
+  interestRate: number;      // annual percentage, display only; the server ignores it
 }
 
 interface StrategyInput {
@@ -342,7 +345,7 @@ Public. Returns `RegisterResponse`. Duplicate email → `400`
 ### `GET /api/tomes`
 
 Authenticated. Returns `TomeResponse[]`, `[]` when the user has none. Used by Dashboard, Accounts,
-Simulate ("Fill from my accounts"), and Compare.
+Simulate and Compare.
 
 ### `POST /api/tomes`
 
@@ -412,11 +415,12 @@ Response (abridged):
 {
   "id": "<SIMULATION_ID>",
   "status": "COMPLETED",
-  "totalInterestPaid": 226.17,
-  "totalPrincipalPaid": 973.83,
-  "monthsToPayoff": 24,
+  "totalInterestPaid": 250.0,
+  "totalPrincipalPaid": 1000.0,
+  "monthsToPayoff": 25,
   "payoffDate": "2027-01-15T12:00:00Z",
   "savingsComparedToBaseline": 0.0,
+  "remainingBalance": 0.0,
   "schedule": [
     {
       "monthIndex": 1,
@@ -430,13 +434,37 @@ Response (abridged):
 }
 ```
 
-`monthsToPayoff` is `schedule.length`. The engine stops when the balance reaches zero **or** when
-it has produced `termMonths * 2` rows, whichever comes first. A short term or a payment that does
-not cover interest can therefore end `COMPLETED` with a positive `remainingBalance`. There is no
-unpaid flag.
+`status` is `COMPLETED` only when the final balance reaches zero. A plan that runs out of
+`termMonths` (a horizon, not a doubled cap) is `FAILED` and carries `remainingBalance`,
+`monthsToPayoff: 0` and `payoffDate: null`; `SimulationResultView` shows the remaining balance and a
+warning instead of a payoff date. `savingsComparedToBaseline` is `0` for a failed run.
 
-`payoffDate` is exactly the last `schedule[].date`; it is not a separate calculation. `userId` and
+`payoffDate` is the last `schedule[].date` for a completed run and `null` otherwise. `userId` and
 `simulationInputId` echo the request body (both `null` for this UI, which does not send them).
+
+### Simulation ledger (new path)
+
+The decision authority is the monthly timeline, not the recommendation. The legacy
+`/api/assemble/run` above is kept for one release; new work uses:
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/api/simulate/compare` | five plans over one debt set; returns `ComparisonResponse` |
+| POST | `/api/simulate/run` | one plan; returns `PlanTimeline` |
+| GET | `/api/simulate/runs/{runId}` | a persisted plan |
+| GET | `/api/simulate/runs?limit=20` | recent plans |
+| GET | `/api/simulate/comparisons/{groupId}` | all plans of one comparison |
+
+`PlanType`: `CURRENT`, `MINIMUM`, `SNOWBALL`, `AVALANCHE`, `HYBRID`.
+`TerminationReason`: `NONE`, `PAID_OFF`, `HORIZON_REACHED`, `STAGNANT`.
+`extraPayment` and `lumpSumPayment` apply to the three strategy plans only.
+
+The TypeScript shapes live in `src/types/api.ts` (`MonthLedger`, `DebtMonthLedger`,
+`PlanTimeline`, `ComparisonResponse`). Simulate calls `/api/simulate/run`, Compare calls
+`/api/simulate/compare` with all five plans, and Dashboard reads
+`/api/simulate/runs?limit=20` and shows the first month of the latest `CURRENT` run. Compare
+renders `recommendedPlan` directly; no page calls `/api/oracle/strategy/*` or
+`/api/assemble/run`.
 
 ### `POST /api/oracle/strategy/recommend`
 
@@ -460,9 +488,11 @@ Authenticated. Body is a **bare array** of `DebtSnapshot`; the response is a **b
 "AVALANCHE"
 ```
 
-Empty array → `"MINIMUM_ONLY"`. `apr` is a percentage here, but the recommender compares the
-maximum against `0.15`, so **any account above 0.15% APR returns `"AVALANCHE"`**. The intended
-15% threshold is a unit bug; do not read the recommendation as nuanced.
+Empty array (or every balance at `0`) → `"MINIMUM_ONLY"`. Otherwise the answer is the cheapest of
+`SNOWBALL`, `AVALANCHE` and `HYBRID` under the same projection and ranking as `/analyze`, so the
+two endpoints agree. Because the request carries no extra payment, plans differ only once a debt
+closes; when every payment is a minimum the plans tie and the name tie-break returns
+`"AVALANCHE"`. This is an identical-plan outcome, not a preference.
 
 ### `POST /api/oracle/strategy/order`
 
@@ -516,7 +546,10 @@ Authenticated. Body:
 
 Returns `StrategyAnalysis`. `recommendedStrategy` is always a string today; the server falls back
 to `"MINIMUM_ONLY"` when there are no comparisons, even though the TypeScript type allows `null`.
-Projected interest is **identical across strategies**; the UI labels this explicitly.
+`projectedInterest` comes from a per-debt payoff simulation and reacts to ordering once
+`input.extraPayment` gives the plan money above the minimums. This Oracle analysis is legacy: the
+Compare page now uses `/api/simulate/compare`, whose `recommendedPlan` is the only recommendation
+the UI renders.
 
 ### Wrapped but unused by screens
 
@@ -531,25 +564,24 @@ them; the UI only lists, creates, and deletes scenarios.
 
 ## 6. UI quirks and invariants
 
-1. **APR units.** Forms accept percentages. `SimulatePage` divides by 100 before sending
-   `SimulationInput.interestRate`. `Tome.apr` and `DebtSnapshot.interestRate` stay percentages.
-   Never mix the two.
-2. **Estimated APR is unreachable.** `effectiveApr()` and the "estimated" hint still handle a
-   `null` `apr`, but the API cannot create such an account: a blank APR returns `500`. In practice
-   every stored `apr` is numeric and `estimatedApr` mirrors it. Keep the defensive code, but do
-   not promise an estimate in copy.
-3. **Underpayment guard.** The engine loops until the balance reaches zero **or** `termMonths * 2`
-   rows. `SimulatePage` refuses to submit when `minimumPayment + extraPayment` does not exceed the
-   first month's interest, which prevents an obviously underfunded run. A short `termMonths` can
-   still hit the cap with a balance left. Keep the guard if the form changes.
-4. **Single-balance simulation.** `POST /api/assemble/run` models one balance. "Fill from my
-   accounts" sums balances and minimums and uses the balance-weighted APR; it is an approximation,
-   not a multi-debt schedule.
-5. **Ephemeral runs.** Results are not persisted server-side. The response carries a generated
-   `id`, but there is no way to fetch it again. The latest run is written to `sessionStorage`
-   under `utilisim.lastRun` for the Dashboard. Clearing the tab loses it.
-6. **Scenarios are presets, not results.** Only name, strategy, extra payment, and lump sum are
-   stored. Balance, APR, and term are always re-entered.
+1. **APR units.** Ledger pages send `tomeIds`; the server reads the stored percentage APR. The
+   legacy single-balance wrapper converts a form percentage with `aprPercentToDecimal()` before
+   sending `SimulationInput.interestRate` (annual decimal). `Tome.apr`, `DebtSnapshot.apr` and
+   `DebtSnapshot.interestRate` stay percentages. Never mix the two.
+2. **Estimated APR is reachable.** A null/blank `apr` stores `estimatedApr = 16.0000` (percent);
+   `apr` itself stays null. `effectiveApr()` falls back to the estimate, and the Accounts field is
+   optional. Do not describe the estimate as broken or unreachable.
+3. **Horizon, not a doubled cap.** `SimulatePage` validates a horizon of 1-600 months, non-negative
+   extra/lump sums, and a lump-sum month inside the horizon. The engine returns
+   `HORIZON_REACHED` or `STAGNANT` with a remaining balance instead of pretending the plan paid
+   off.
+4. **Single-balance simulation (legacy).** `POST /api/assemble/run` models one balance. No page
+   calls it after the FEAT-002 migration; it remains until the retirement change.
+5. **Ephemeral runs (legacy).** `/api/assemble/run` results are not persisted server-side. The
+   `/api/simulate/*` ledger runs are persisted and are what Dashboard reads; the old
+   `utilisim.lastRun` session value is no longer written by the pages.
+6. **Scenarios are presets, not results.** Only name, plan (`strategy`), extra payment, and lump
+   sum are stored. Balances come from the selected accounts; the horizon is re-entered.
 7. **Scenarios are owner-scoped.** The API sets `userId` from the token and returns only the
    caller's rows; foreign ids are indistinguishable from missing ones (`404`). The Scenarios page
    states that the list is private.
@@ -569,16 +601,20 @@ them; the UI only lists, creates, and deletes scenarios.
     body from a successful delete.
 15. **No refresh flow.** There is no refresh endpoint. A `401` ends in a client-side sign-out;
     expiry or a backend restart now produces that `401` and clears the session (§3).
-16. **The term cap is hidden.** A result can report `COMPLETED` with a non-zero final
-    `remainingBalance` after `termMonths * 2` rows. Do not label such a run "paid off" without
-    checking the last row.
+16. **A failed run is not a payoff (legacy).** For `/api/assemble/run`, `status === 'FAILED'` means
+    the balance never reached zero (`remainingBalance > 0`, `payoffDate: null`,
+    `monthsToPayoff: 0`). `SimulationResultView` shows the remaining balance and a warning; never
+    read `monthsToPayoff` alone.
 17. **A client-supplied `userId` is ignored.** Scenario ownership comes from the token; POST
     clears any `id` in the body so a create cannot overwrite an existing row.
-18. **Blank APR is a failed create, not a fallback.** See §3 and §5. This is the most likely
-    user-visible `500` in the Accounts form.
-19. **The recommender is effectively constant.** Because percentages are compared against `0.15`,
-    any account above 0.15% APR returns `AVALANCHE`. Do not present this as a considered
-    recommendation until the unit bug is fixed.
+18. **Blank APR stores the estimate.** `POST /api/tomes` with `apr: null` persists 16.0000 percent
+    and returns `estimatedApr`. The Accounts page labels APR as optional.
+19. **The Oracle recommendation is legacy.** `/recommend` returns the cheapest of Snowball,
+    Avalanche and Hybrid under the old projection. Compare no longer calls it; the ledger's
+    `recommendedPlan` is the only recommendation the UI renders.
+20. **Ledger payoff state uses `terminationReason`.** A run can have `status: COMPLETED` and still
+    end at the horizon. Show "not repaid" unless `terminationReason` is `PAID_OFF`; never infer
+    payoff from `status`.
 
 ---
 

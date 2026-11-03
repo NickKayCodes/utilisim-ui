@@ -54,7 +54,7 @@ Principles:
 | Linting | ESLint 10 + `typescript-eslint` + React Hooks/Refresh plugins |
 | Formatting | Prettier |
 | Icons | `react-icons` is installed; the shell currently uses text glyphs |
-| Tests | None yet; see [Testing approach](#10-testing-approach) |
+| Tests | Vitest + React Testing Library; 90% coverage gate |
 
 ---
 
@@ -118,12 +118,13 @@ be repointed at a different API without rebuilding.
 ### Quality gates
 
 ```bash
-npm run typecheck   # tsc --noEmit, strict, src only
-npm run lint        # ESLint on src
-npm run build       # Rsbuild production build
+npm run typecheck     # tsc --noEmit, strict, src only
+npm run lint          # ESLint on src
+npm run test:coverage # Vitest with the 90% coverage gate
+npm run build         # Rsbuild production build
 ```
 
-Run all three before handing off a change. Notes:
+Run all four before handing off a change. Notes:
 
 - `noUnusedLocals` / `noUnusedParameters` are on — remove dead imports and parameters.
 - `verbatimModuleSyntax` is on — use `import type { … }` for type-only imports.
@@ -147,7 +148,8 @@ change `server.port` in `rsbuild.config.ts`.
 2. `npm run dev` opens `http://localhost:3000`.
 3. You are redirected to `/login` because there is no session.
 4. Register a synthetic account (or sign in), then add an account on `/app/accounts`.
-5. Run a simulation on `/app/simulate` and compare strategies on `/app/compare`.
+5. Run a plan on `/app/simulate`, compare all five plans on `/app/compare`, and check the next-month
+   card on `/app/dashboard`.
 
 ---
 
@@ -165,29 +167,30 @@ src/
   lib/
     api.ts                  fetch wrapper, token/session storage, ApiError
     use-api-resource.ts     Generic load/reload hook for GET data
-    accounts.ts             Balance/APR/utilization helpers, Tome -> DebtSnapshot
+    accounts.ts             Balance/APR/utilization/current-payment helpers; legacy DebtSnapshot mapper
     format.ts               Money/percent/date/strategy labels, safe number parsing
-    last-run.ts             sessionStorage for the latest simulation
+    last-run.ts             Legacy sessionStorage for the single-balance result
   services/
     auth.ts                 POST /api/auth/login, /register
     tomes.ts                GET/POST/DELETE /api/tomes
     archive.ts              Scenario CRUD under /api/archive/scenarios
-    oracle.ts               order, recommend, analyze, total-interest, determinism
-    simulation.ts           POST /api/assemble/run
+    oracle.ts               Legacy Oracle strategy calls; no page uses them
+    simulation.ts           Ledger run/compare/history plus the legacy /api/assemble/run wrapper
   layout/
     AppLayout.tsx           Sidebar, topbar, mobile menu, scroll reset, logout
     RequireAuth.tsx         Redirects anonymous users; boot spinner
   components/
     ui.tsx                  Alert, Field, PageHeader, Section, StatCard, Badge, Spinner, EmptyState
-    SimulationResultView.tsx  Summary stats + amortization table
+    PlanTimelineView.tsx    Plan summary + 11-column monthly ledger with debt rows
+    SimulationResultView.tsx  Legacy single-balance result view
   pages/
     LoginPage.tsx           Email/password sign-in
     RegisterPage.tsx        Create account, then auto-login
-    DashboardPage.tsx       Totals, last run, recent scenarios, accounts
-    AccountsPage.tsx        List/create/delete tomes, utilization bars
+    DashboardPage.tsx       Totals, next month of the current plan, recent scenarios, accounts
+    AccountsPage.tsx        List/create/delete tomes, utilization bars, minimum/current payments
     ScenariosPage.tsx       List/create/delete scenarios, prefill simulator
-    SimulatePage.tsx        Single-balance payoff run + save-as-scenario
-    ComparePage.tsx         Recommend/order/analyze over selected accounts
+    SimulatePage.tsx        One-plan ledger timeline + save-as-scenario
+    ComparePage.tsx         Five-plan ledger comparison with the server recommendation
 ```
 
 ### Layer responsibilities
@@ -197,7 +200,7 @@ src/
 | `pages/` | Form state, validation, loading/error UI, navigation | Call `fetch` directly |
 | `services/` | Endpoint paths, request/response types | Hold React state |
 | `lib/api.ts` | Headers, token, JSON, error normalisation, `401` handling | Know about specific screens |
-| `lib/*` | Pure helpers (accounts, formatting, last run) | Perform I/O beyond documented storage |
+| `lib/*` | Pure helpers (accounts, formatting, last-run storage) | Perform I/O beyond documented storage |
 | `components/ui.tsx` | Reusable presentational primitives | Fetch data or own route state |
 
 ---
@@ -299,7 +302,8 @@ There is **no state library** (no Redux, Zustand, or React Query). State is loca
 | Server reads | Page-local `useApiResource(loader)` | `{ data, error, loading, reload }` |
 | Mutations | Page-local `useState` | `busy`/`error`, call service, then `reload()` |
 | Form input | Page-local `useState` | One object per form plus a validation function |
-| Latest simulation | `sessionStorage` (`utilisim.lastRun`) | Written after a successful run; read by Dashboard |
+| Latest plan | Server (`/api/simulate/runs`) | Dashboard reads the latest `CURRENT` run |
+| Legacy last run | `sessionStorage` (`utilisim.lastRun`) | Kept for the retired single-balance view |
 | Cross-page preset | React Router `location.state` | Scenarios → Simulate |
 
 ### `useApiResource`
@@ -352,10 +356,12 @@ responses fall back to a readable status message (see the UI contract).
 
 ### Data shaping
 
-- `lib/accounts.ts` converts a stored `Tome` into the `DebtSnapshot` the Oracle expects.
-- `effectiveApr()` prefers `apr` and falls back to `estimatedApr`. The fallback is defensive: the
-  API cannot currently store a null APR, so a blank APR never reaches this code.
-- `weightedApr()` produces a balance-weighted percentage for the simulator prefill.
+- `lib/accounts.ts` aggregates balances, minimums, current payments and credit limits.
+  `toDebtSnapshot()` is the legacy Oracle mapper; the ledger pages send `tomeIds` instead.
+- `effectiveApr()` prefers `apr` and falls back to `estimatedApr`. The API stores 16% when the
+  user leaves APR blank, so the estimate path is reachable.
+- `totalCurrentPayments()` uses `currentPayment` and falls back to the minimum when it is absent.
+- `weightedApr()` produces a balance-weighted percentage for the Simulate/Compare summaries.
 - `lib/format.ts` centralises money, percent, date, and strategy labels.
 
 ### Unit boundaries
@@ -363,9 +369,8 @@ responses fall back to a readable status message (see the UI contract).
 | Field | Unit |
 |---|---|
 | `Tome.apr`, `Tome.estimatedApr` | Percent (`19.99`) |
-| Simulator "APR %" input | Percent, converted to decimal on submit |
-| `SimulationInput.interestRate` | Annual decimal (`0.1999`) |
-| `DebtSnapshot.interestRate` | Percent, as sent by this UI |
+| Ledger inputs (`startMonth`, `horizonMonths`, `extraPayment`, `lumpSumPayment`) | `YYYY-MM-01`, months, dollars |
+| `PlanTimeline` money fields | Dollars; dates are ISO strings |
 
 ### Adding a new API area
 
@@ -380,19 +385,20 @@ responses fall back to a readable status message (see the UI contract).
 
 ## 10. Testing approach
 
-There is **no automated test runner** yet. The current regression check is a manual browser smoke
-test against a running API.
+The UI uses **Vitest + React Testing Library** with a 90% coverage gate. The existing suite covers
+every page, the API transport, the ledger timeline, and the pure helpers.
 
 ### Current gates
 
 ```bash
 npm run typecheck
 npm run lint
+npm run test:coverage
 npm run build
 ```
 
-These catch type drift, unused code, hook-rule violations, and bundling failures. They do not catch
-behavioural regressions.
+These catch type drift, unused code, hook-rule violations, behavioural regressions, and bundling
+failures. `test:coverage` fails below 90% lines, statements, functions or branches.
 
 ### Manual smoke checklist
 
@@ -401,26 +407,26 @@ behavioural regressions.
 2. **Session:** reload the app; the session restores without a flash of the login page. Restart
    the API; the next request currently fails with `500` and the UI stays signed in until you log
    out manually (gap #18).
-3. **Accounts:** create an account with a numeric APR. Then try a blank APR and confirm the
-   current `500` failure is shown and no account is created (known defect; see gap #17). Delete
-   the account. Try deleting it twice to see the tome-delete `500` path.
+3. **Accounts:** create an account with a numeric APR. Then leave APR blank and confirm the 16%
+   estimate is stored and shown as "estimated". Delete the account. Try deleting it twice to see
+   the tome-delete `500` path.
 4. **Scenarios:** create a scenario; reload; confirm it persists. Click "Simulate" and verify the
-   strategy and extra payments are prefilled. Delete it.
-5. **Simulate:** run a valid simulation and inspect summary stats plus the amortization table. Try
-   a payment that does not cover monthly interest and confirm the client blocks it.
-6. **Compare:** select and deselect accounts; run Recommend, Order debts, and Analyze. Confirm the
-   caveat about identical projected interest is visible.
+   plan and extra payments are prefilled. Delete it.
+5. **Simulate:** select accounts, run a plan, expand a month, and check the summary plus the eleven
+   ledger columns. Confirm `CURRENT`/`MINIMUM` disable extra and lump-sum inputs.
+6. **Compare:** run the five-plan comparison, switch timeline cards, and confirm the recommendation
+   caption matches the server's `recommendedPlan`.
 7. **Responsive:** check the mobile menu, focus order, and that tables remain usable at narrow
    widths.
 
 ### Recommended test stack
 
-| Layer | Tool | First targets |
+| Layer | Tool | Targets |
 |---|---|---|
 | Unit | Vitest | `lib/accounts.ts`, `lib/format.ts`, `lib/last-run.ts` |
-| Component | Vitest + React Testing Library | `LoginPage`, `AccountsPage` form validation, `SimulatePage` guard |
+| Component | Vitest + React Testing Library | pages, `PlanTimelineView`, form validation, load/error states |
 | Transport | Vitest with a mocked `fetch` | `lib/api.ts` error/`204`/`401` behaviour |
-| End-to-end | Playwright | Register → add account → simulate → save scenario |
+| End-to-end | Playwright | Register → add account → run plan → compare → save scenario |
 
 Run tests in CI alongside typecheck, lint, and build. Prefer testing behaviour through accessible
 roles and labels; the components already use semantic HTML and `role="alert"`.
@@ -438,20 +444,16 @@ roles and labels; the components already use semantic HTML and `role="alert"`.
 5. Load data with `useApiResource` and surface errors with `errorMessage`.
 6. Update the folder map and routing table in this README.
 
-### Adding a multi-debt simulation
+### Extending the ledger UI
 
-The current simulator models one balance. A real multi-debt flow needs an API that accepts a list
-of debts and returns a combined schedule. Until then, the "Fill from my accounts" button is an
-approximation; keep that wording honest.
+Simulate, Compare and Dashboard consume `/api/simulate/*`. Extend `PlanTimelineView` instead of
+duplicating the monthly table; keep its eleven columns aligned with the UI contract.
 
-### Persisting runs
+### Retiring the legacy flow
 
-When the API gains run persistence and a lookup endpoint:
-
-1. Add the DTOs and service calls.
-2. Replace `lib/last-run.ts` session storage with server data.
-3. Add a runs list/detail route.
-4. Remove the "kept in this browser only" copy from the Dashboard.
+`/api/assemble/run`, the Oracle services, `SimulationResultView`, and `lib/last-run.ts` remain as
+transition code, but no page calls them. Remove them together with their tests and contract
+sections once the backend retires those endpoints.
 
 ### Hardening the session
 
@@ -474,13 +476,15 @@ Every expansion must keep the UI contract current. If a response shape changes, 
 
 ## 12. Known gaps
 
+Resolved rows are kept numbered so older references stay valid; only open gaps need work.
+
 | # | Gap | Impact | Suggested phase-2 work |
 |---|---|---|---|
-| 1 | No test runner | Refactors rely on manual smoke tests | Add Vitest + React Testing Library; add Playwright |
+| 1 | **Resolved:** test runner | Vitest + RTL suite with a 90% coverage gate | Add Playwright for the end-to-end path |
 | 2 | No account editing | Users delete and re-create to change an APR | Add `PUT /api/tomes/{id}` in the API, then an edit form |
 | 3 | Scenarios are global | Every user sees every scenario | Scope scenarios in the API; remove the caveat banner |
-| 4 | Runs are not persisted | No history; only one run per tab | Persist runs; add a runs list/detail page |
-| 5 | Projections are not strategy-sensitive | `analyze` shows identical interest per strategy | Fix the API projection; then present real savings |
+| 4 | **Resolved:** runs are persisted | `/api/simulate/*` stores runs; Dashboard reads the latest `CURRENT` plan | Add a runs list/detail page if history becomes user-facing |
+| 5 | **Resolved:** projections are strategy-sensitive | The ledger returns per-plan totals; Compare renders them | None |
 | 6 | Token in `localStorage` | Readable by any XSS | Move to an httpOnly, `SameSite` cookie or short-lived access token |
 | 7 | Token expiry ~10 days, no refresh | Expiry is not a clean sign-out: the API returns `500`, so the session sticks until manual logout | Add refresh/rotation after the API returns `401` for expired tokens |
 | 8 | No runtime config | `PUBLIC_API_BASE` is baked in at build time | Load `/config.json` at boot or inject config at container start |
@@ -490,16 +494,16 @@ Every expansion must keep the UI contract current. If a response shape changes, 
 | 12 | No route-level code splitting | The app chunk loads every page upfront | Route-level `React.lazy` + `Suspense` |
 | 13 | `window.confirm` for deletes | Inconsistent UX, hard to test | Replace with an accessible confirmation dialog |
 | 14 | No role-aware UI | Everyone sees everything | Add roles to the API, then gate nav/actions |
-| 15 | Simulate is single-balance | Does not model multiple accounts at once | Add a multi-debt flow once the API supports it |
+| 15 | **Resolved:** Simulate is single-balance | Simulate runs a plan over the selected account set | None |
 | 16 | Limited accessibility testing | Keyboard/screen-reader regressions possible | Add axe checks and a keyboard pass in CI |
-| 17 | Blank APR → API `500` | The Accounts form offers an APR field that cannot be left blank | Send a numeric default or wait for the API fix; remove the "estimated" promise |
+| 17 | **Resolved:** blank APR | The API stores 16% and returns `estimatedApr` | None |
 | 18 | Invalid/expired token → API `500` | No `401`, so the session is not cleared and pages fail repeatedly | Fix the API to return `401`; optionally clear on auth-related `500`s as a stopgap |
-| 19 | Simulation cap at `termMonths * 2` | A "completed" run can still owe a balance | Show the final `remainingBalance` and avoid "paid off" wording when it is non-zero |
-| 20 | Recommend always returns `AVALANCHE` for any non-trivial APR | The recommendation looks decisive but is a unit bug | Fix the API threshold; until then, label it as a rough heuristic |
+| 19 | **Resolved:** payoff wording | `terminationReason` drives "paid off"/"not repaid" and the final balance | None |
+| 20 | **Resolved:** Oracle recommendation | Compare uses the ledger's `recommendedPlan`; Oracle calls remain only in legacy code | None |
 
-Suggested order: add a test runner and cover auth/accounts/simulate; add account editing once the
-API exposes `PUT`; persist runs and make projections meaningful; harden the session and runtime
-config; then add pagination, timeouts, an error boundary, and code splitting.
+Suggested order: add account editing once the API exposes `PUT`; scope scenarios; harden the
+session and runtime config; then add pagination, timeouts, an error boundary, code splitting, and
+accessibility checks.
 
 ---
 
@@ -509,8 +513,8 @@ config; then add pagination, timeouts, an error boundary, and code splitting.
 |---|---|---|
 | "Cannot reach the UtiliSim API" | Backend not running on `:8080` | Start `utilisim-api`; retry the page |
 | Pages fail after a backend restart but you stay signed in | Random JWT key invalidates tokens; the API returns `500`, so the UI does not clear the session | Log out and back in (gap #18) |
-| Accounts form fails with `Internal Server Error` | APR was left blank; the API rejects `null` | Enter a numeric APR (gap #17) |
-| A run says `COMPLETED` but the last balance is non-zero | `termMonths * 2` cap reached | Increase the term/payment; gap #19 |
+| Accounts form shows an estimated APR | APR was left blank; the API stores the 16% estimate | Enter a numeric APR if you need a different rate |
+| A plan says `COMPLETED` but still owes a balance | `terminationReason` is `HORIZON_REACHED` or `STAGNANT` | Increase the horizon/payment; the timeline says "Not repaid" |
 | `/api/...` returns `404` in the browser | Dev server not using the proxy, or a wrong `PUBLIC_API_BASE` | Use `npm run dev`; check `rsbuild.config.ts` / the env var |
 | CORS error | Calling `:8080` directly from another origin | Use the proxy, or extend the API's `CORSConfig` |
 | Port 3000 already in use | Another dev server is running | Stop it or change `server.port` in `rsbuild.config.ts` |
