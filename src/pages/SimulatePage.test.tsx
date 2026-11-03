@@ -5,11 +5,10 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SimulatePage } from './SimulatePage';
 import { ApiError } from '../lib/api';
-import { readLastRun } from '../lib/last-run';
-import type { Scenario, SimulationResult, Tome } from '../types/api';
+import type { PlanTimeline, Scenario, Tome } from '../types/api';
 
 vi.mock('../services/tomes', () => ({ tomesApi: { list: vi.fn() } }));
-vi.mock('../services/simulation', () => ({ simulationApi: { run: vi.fn() } }));
+vi.mock('../services/simulation', () => ({ simulationApi: { runPlan: vi.fn() } }));
 vi.mock('../services/archive', () => ({ archiveApi: { create: vi.fn() } }));
 
 import { tomesApi } from '../services/tomes';
@@ -17,7 +16,7 @@ import { simulationApi } from '../services/simulation';
 import { archiveApi } from '../services/archive';
 
 const listTomes = vi.mocked(tomesApi.list);
-const runSimulationApi = vi.mocked(simulationApi.run);
+const runPlan = vi.mocked(simulationApi.runPlan);
 const createScenario = vi.mocked(archiveApi.create);
 
 type InitialEntries = ComponentProps<typeof MemoryRouter>['initialEntries'];
@@ -39,21 +38,67 @@ function tome(overrides: Partial<Tome> = {}): Tome {
   };
 }
 
-const result: SimulationResult = {
-  id: 'run-1',
-  simulationInputId: null,
-  userId: null,
+const timeline: PlanTimeline = {
+  runId: 7,
+  plan: 'AVALANCHE',
+  label: 'Avalanche',
   status: 'COMPLETED',
-  startedAt: '2026-01-01T00:00:00Z',
-  completedAt: '2026-01-01T00:00:00Z',
-  totalInterestPaid: 100,
-  totalPrincipalPaid: 1000,
-  monthsToPayoff: 12,
-  payoffDate: '2027-01-01T00:00:00Z',
-  savingsComparedToBaseline: 10,
-  schedule: [],
-  archivedAt: null,
-  ledgerEntryId: null,
+  terminationReason: 'PAID_OFF',
+  monthsToPayoff: 2,
+  payoffDate: '2026-03-01',
+  totalInterest: 15.5,
+  totalPaid: 1015.5,
+  finalBalance: 0,
+  peakUtilizationPct: 40,
+  months: [
+    {
+      monthIndex: 1,
+      monthLabel: 'Jan 2026',
+      periodStart: '2026-01-01',
+      startingBalance: 1000,
+      monthlyInterest: 10,
+      minimumDue: 35,
+      actualPayment: 500,
+      extraPayment: 0,
+      lumpSumApplied: 0,
+      remainingBalance: 510,
+      utilizationPct: 40,
+      interestPaid: 10,
+      amountToCoverInterest: 10,
+      debts: [
+        {
+          tomeId: 't1',
+          accountName: 'Visa',
+          startingBalance: 1000,
+          monthlyInterest: 10,
+          minimumDue: 35,
+          actualPayment: 500,
+          extraPayment: 0,
+          lumpSumApplied: 0,
+          remainingBalance: 510,
+          utilizationPct: 40,
+          interestPaid: 10,
+          amountToCoverInterest: 10,
+        },
+      ],
+    },
+    {
+      monthIndex: 2,
+      monthLabel: 'Feb 2026',
+      periodStart: '2026-02-01',
+      startingBalance: 510,
+      monthlyInterest: 5.5,
+      minimumDue: 20,
+      actualPayment: 515.5,
+      extraPayment: 0,
+      lumpSumApplied: 0,
+      remainingBalance: 0,
+      utilizationPct: 0,
+      interestPaid: 5.5,
+      amountToCoverInterest: 5.5,
+      debts: [],
+    },
+  ],
 };
 
 const preset: Scenario = {
@@ -81,144 +126,154 @@ function setValue(label: RegExp, value: string) {
   fireEvent.change(screen.getByLabelText(label), { target: { value } });
 }
 
-function fillValidInputs() {
-  setValue(/Starting balance/, '1000');
-  setValue(/APR %/, '20');
-  setValue(/Term \(months\)/, '12');
-  setValue(/Minimum payment/, '100');
-  setValue(/Extra per month/, '0');
-  setValue(/One-time lump sum/, '0');
-}
-
-async function runValidSimulation(user: ReturnType<typeof userEvent.setup>) {
-  fillValidInputs();
-  await user.click(screen.getByRole('button', { name: 'Run simulation' }));
-  await waitFor(() => expect(screen.getByText('Amortization schedule')).toBeInTheDocument());
+async function runPlanFor(user: ReturnType<typeof userEvent.setup>) {
+  setValue(/Start month/, '2026-01');
+  await user.selectOptions(screen.getByLabelText(/^Plan/), 'AVALANCHE');
+  setValue(/Extra per month/, '75');
+  await user.click(screen.getByRole('button', { name: 'Run plan' }));
+  await waitFor(() => expect(runPlan).toHaveBeenCalledOnce());
 }
 
 beforeEach(() => {
   listTomes.mockReset();
-  runSimulationApi.mockReset();
+  runPlan.mockReset();
   createScenario.mockReset();
-  listTomes.mockResolvedValue([]);
-  runSimulationApi.mockResolvedValue(result);
+  listTomes.mockResolvedValue([tome()]);
+  runPlan.mockResolvedValue(timeline);
   createScenario.mockResolvedValue(preset);
 });
 
 describe('SimulatePage', () => {
-  it('renders the default form and disables account prefilling without accounts', async () => {
+  it('shows an empty state without accounts', async () => {
+    listTomes.mockResolvedValue([]);
     renderSimulate();
 
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Fill from my accounts' })).toBeDisabled(),
-    );
-    expect(screen.getByLabelText(/Term \(months\)/)).toHaveValue(60);
-    expect(screen.getByLabelText(/Strategy/)).toHaveValue('SNOWBALL');
+    await waitFor(() => expect(screen.getByText('No accounts to simulate')).toBeInTheDocument());
+    expect(screen.getByRole('link', { name: 'Add an account' })).toBeInTheDocument();
   });
 
-  it('fills the form from the current accounts', async () => {
+  it('shows a list error and retries', async () => {
+    const user = userEvent.setup();
+    listTomes
+      .mockRejectedValueOnce(new ApiError(500, 'database down'))
+      .mockResolvedValueOnce([tome()]);
+    renderSimulate();
+
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('database down'));
+
+    await user.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
+    expect(listTomes).toHaveBeenCalledTimes(2);
+  });
+
+  it('defaults to CURRENT with extra and lump-sum controls disabled', async () => {
+    renderSimulate();
+    await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
+
+    expect(screen.getByLabelText(/^Plan/)).toHaveValue('CURRENT');
+    expect(screen.getByLabelText(/Extra per month/)).toBeDisabled();
+    expect(screen.getByLabelText(/One-time lump sum/)).toBeDisabled();
+    expect(screen.getByLabelText(/Lump-sum month/)).toBeDisabled();
+    expect(screen.getByText(/1 of 1 selected/)).toHaveTextContent('$1,200.00');
+  });
+
+  it('enables budget controls for strategy plans', async () => {
+    const user = userEvent.setup();
+    renderSimulate();
+    await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
+
+    await user.selectOptions(screen.getByLabelText(/^Plan/), 'SNOWBALL');
+
+    expect(screen.getByLabelText(/Extra per month/)).toBeEnabled();
+    expect(screen.getByLabelText(/One-time lump sum/)).toBeEnabled();
+    expect(screen.getByLabelText(/Lump-sum month/)).toBeEnabled();
+  });
+
+  it('toggles account selection', async () => {
     const user = userEvent.setup();
     listTomes.mockResolvedValue([
-      tome({ currentBalance: 1200, apr: 22, minimumDebtPayment: 35 }),
-      tome({ id: 't2', currentBalance: 800, apr: 30, minimumDebtPayment: 20 }),
+      tome(),
+      tome({ id: 't2', name: 'Loan', type: 'STUDENT_LOAN' }),
     ]);
-
     renderSimulate();
-    await waitFor(() => expect(screen.getByText(/From your accounts/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
 
-    await user.click(screen.getByRole('button', { name: 'Fill from my accounts' }));
+    await user.click(screen.getByRole('checkbox', { name: /Visa/ }));
+    expect(screen.getByText(/1 of 2 selected/)).toBeInTheDocument();
 
-    expect(screen.getByLabelText(/Starting balance/)).toHaveValue(2000);
-    expect(screen.getByLabelText(/Minimum payment/)).toHaveValue(55);
-    expect(screen.getByLabelText(/APR %/)).toHaveValue(25.2);
+    await user.click(screen.getByRole('checkbox', { name: /Loan/ }));
+    expect(screen.getByText(/0 of 2 selected/)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Select all' }));
+    expect(screen.getByText(/2 of 2 selected/)).toBeInTheDocument();
   });
 
-  it('validates every input before running', async () => {
+  it('validates the form before running', async () => {
     const user = userEvent.setup();
     renderSimulate();
-    const run = screen.getByRole('button', { name: 'Run simulation' });
+    await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
 
-    await user.click(run);
-    expect(screen.getByRole('alert')).toHaveTextContent('Starting balance must be greater than zero.');
+    await user.click(screen.getByRole('checkbox', { name: /Visa/ }));
+    await user.click(screen.getByRole('button', { name: 'Run plan' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Select at least one account');
 
-    setValue(/Starting balance/, '1000');
-    await user.click(run);
-    expect(screen.getByRole('alert')).toHaveTextContent('APR must be zero or more.');
+    await user.click(screen.getByRole('checkbox', { name: /Visa/ }));
+    setValue(/Horizon \(months\)/, '0');
+    await user.click(screen.getByRole('button', { name: 'Run plan' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Horizon must be between 1 and 600 months.');
 
-    setValue(/APR %/, '20');
-    setValue(/Term \(months\)/, '');
-    await user.click(run);
-    expect(screen.getByRole('alert')).toHaveTextContent('Term must be at least 1 month.');
+    setValue(/Horizon \(months\)/, '120');
+    await user.selectOptions(screen.getByLabelText(/^Plan/), 'HYBRID');
 
-    setValue(/Term \(months\)/, '12');
-    await user.click(run);
-    expect(screen.getByRole('alert')).toHaveTextContent(
-      'Minimum payment must be greater than zero.',
-    );
-
-    setValue(/Minimum payment/, '-1');
-    await user.click(run);
-    expect(screen.getByRole('alert')).toHaveTextContent(
-      'Minimum payment must be greater than zero.',
-    );
-
-    setValue(/Minimum payment/, '100');
     setValue(/Extra per month/, '-1');
-    await user.click(run);
+    await user.click(screen.getByRole('button', { name: 'Run plan' }));
     expect(screen.getByRole('alert')).toHaveTextContent('Extra payment must be zero or more.');
 
     setValue(/Extra per month/, '0');
     setValue(/One-time lump sum/, '-1');
-    await user.click(run);
+    await user.click(screen.getByRole('button', { name: 'Run plan' }));
     expect(screen.getByRole('alert')).toHaveTextContent('Lump sum must be zero or more.');
 
     setValue(/One-time lump sum/, '0');
-    await user.click(run);
+    setValue(/Lump-sum month/, '121');
+    await user.click(screen.getByRole('button', { name: 'Run plan' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Lump-sum month must be within the horizon.');
+    expect(runPlan).not.toHaveBeenCalled();
+  });
 
-    await waitFor(() => expect(runSimulationApi).toHaveBeenCalledOnce());
-    expect(runSimulationApi.mock.calls[0][0]).toMatchObject({
-      principal: 1000,
-      interestRate: 0.2,
-      termMonths: 12,
-      minimumPayment: 100,
-      extraPayment: 0,
+  it('runs one plan and renders the timeline', async () => {
+    const user = userEvent.setup();
+    renderSimulate();
+    await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
+
+    await runPlanFor(user);
+
+    expect(runPlan).toHaveBeenCalledWith({
+      tomeIds: ['t1'],
+      plan: 'AVALANCHE',
+      startMonth: '2026-01-01',
+      horizonMonths: 120,
+      extraPayment: 75,
       lumpSumPayment: 0,
-      strategy: 'SNOWBALL',
+      lumpSumMonth: 1,
     });
-  });
 
-  it('rejects a payment that does not cover monthly interest', async () => {
-    const user = userEvent.setup();
-    renderSimulate();
-
-    fillValidInputs();
-    setValue(/Minimum payment/, '1');
-    await user.click(screen.getByRole('button', { name: 'Run simulation' }));
-
-    expect(screen.getByRole('alert')).toHaveTextContent('does not cover');
-    expect(runSimulationApi).not.toHaveBeenCalled();
-  });
-
-  it('runs a simulation, stores the result and clears it', async () => {
-    const user = userEvent.setup();
-    renderSimulate();
-    await runValidSimulation(user);
-
-    expect(screen.getByText('Months to payoff')).toBeInTheDocument();
-    expect(screen.getByText('12 months')).toBeInTheDocument();
-    expect(readLastRun()).toMatchObject({ id: 'run-1' });
+    expect(screen.getByText('Months to payoff').parentElement).toHaveTextContent('2 months');
+    expect(screen.getByText('Total interest').parentElement).toHaveTextContent('$15.50');
+    expect(screen.getByText('Total paid').parentElement).toHaveTextContent('$1,015.50');
+    expect(screen.getByText('Jan 2026')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Clear' }));
-    expect(screen.queryByText('Amortization schedule')).not.toBeInTheDocument();
+    expect(screen.queryByText('Jan 2026')).not.toBeInTheDocument();
   });
 
-  it('shows a simulation error', async () => {
+  it('shows a run error', async () => {
     const user = userEvent.setup();
-    runSimulationApi.mockRejectedValue(new ApiError(500, 'simulation failed'));
+    runPlan.mockRejectedValue(new ApiError(500, 'simulation failed'));
     renderSimulate();
+    await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
 
-    fillValidInputs();
-    await user.click(screen.getByRole('button', { name: 'Run simulation' }));
+    await user.click(screen.getByRole('button', { name: 'Run plan' }));
 
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('simulation failed'));
   });
@@ -226,16 +281,19 @@ describe('SimulatePage', () => {
   it('prefills from a scenario passed in navigation state', async () => {
     renderSimulate([{ pathname: '/app/simulate', state: { scenario: preset } }]);
 
-    expect(screen.getByText(/Prefilled strategy and extra payments/)).toBeInTheDocument();
+    expect(screen.getByText(/Prefilled plan and payments/)).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
     expect(screen.getByLabelText(/Extra per month/)).toHaveValue(50);
     expect(screen.getByLabelText(/One-time lump sum/)).toHaveValue(100);
-    expect(screen.getByLabelText(/Strategy/)).toHaveValue('AVALANCHE');
+    expect(screen.getByLabelText(/^Plan/)).toHaveValue('AVALANCHE');
   });
 
   it('requires a name before saving a scenario', async () => {
     const user = userEvent.setup();
     renderSimulate();
-    await runValidSimulation(user);
+    await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Run plan' }));
+    await screen.findByText('Jan 2026');
 
     await user.click(screen.getByRole('button', { name: 'Save scenario' }));
 
@@ -246,34 +304,34 @@ describe('SimulatePage', () => {
   it('saves the run inputs as a scenario', async () => {
     const user = userEvent.setup();
     renderSimulate();
-    await runValidSimulation(user);
+    await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
+    await runPlanFor(user);
 
-    await user.type(screen.getByLabelText(/Save these inputs as a scenario/), '  Plan B  ');
+    await user.type(screen.getByLabelText(/Save this plan as a scenario/), '  Plan B  ');
     await user.click(screen.getByRole('button', { name: 'Save scenario' }));
 
     await waitFor(() =>
       expect(createScenario).toHaveBeenCalledWith({
         name: 'Plan B',
-        strategy: 'SNOWBALL',
-        extraPayment: 0,
+        strategy: 'AVALANCHE',
+        extraPayment: 75,
         lumpSumPayment: 0,
       }),
     );
     expect(await screen.findByText(/Saved "Plan B"/)).toBeInTheDocument();
-    expect(screen.getByLabelText(/Save these inputs as a scenario/)).toHaveValue('');
+    expect(screen.getByLabelText(/Save this plan as a scenario/)).toHaveValue('');
   });
 
   it('shows an error when saving the scenario fails', async () => {
     const user = userEvent.setup();
     createScenario.mockRejectedValue(new ApiError(500, 'could not save scenario'));
     renderSimulate();
-    await runValidSimulation(user);
+    await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
+    await runPlanFor(user);
 
-    await user.type(screen.getByLabelText(/Save these inputs as a scenario/), 'Plan C');
+    await user.type(screen.getByLabelText(/Save this plan as a scenario/), 'Plan C');
     await user.click(screen.getByRole('button', { name: 'Save scenario' }));
 
-    await waitFor(() =>
-      expect(screen.getByText('could not save scenario')).toBeInTheDocument(),
-    );
+    await waitFor(() => expect(screen.getByText('could not save scenario')).toBeInTheDocument());
   });
 });

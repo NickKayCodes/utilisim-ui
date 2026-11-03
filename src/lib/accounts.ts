@@ -8,6 +8,15 @@ export function sumMinimums(tomes: Tome[]): number {
   return tomes.reduce((total, tome) => total + (Number(tome.minimumDebtPayment) || 0), 0);
 }
 
+/** Total the user pays today; falls back to the minimum when unspecified. */
+export function totalCurrentPayments(tomes: Tome[]): number {
+  return tomes.reduce(
+    (total, tome) =>
+      total + (Number(tome.currentPayment ?? tome.minimumDebtPayment) || 0),
+    0,
+  );
+}
+
 export function sumLimits(tomes: Tome[]): number {
   return tomes.reduce((total, tome) => total + (Number(tome.creditLimit) || 0), 0);
 }
@@ -51,4 +60,14 @@ export function toDebtSnapshot(tome: Tome): DebtSnapshot {
 /** Interest accrued on a balance in one month, for a decimal annual rate. */
 export function monthlyInterest(principal: number, annualRate: number): number {
   return (principal * annualRate) / 12;
+}
+
+/**
+ * Annual APR as a percent (19.99) -> annual decimal (0.1999).
+ *
+ * `SimulationInput.interestRate` is the one API field that takes a decimal;
+ * everything else (`Tome.apr`, `DebtSnapshot.apr`) is a percentage.
+ */
+export function aprPercentToDecimal(aprPercent: number): number {
+  return aprPercent / 100;
 }

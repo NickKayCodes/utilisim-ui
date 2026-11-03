@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
+  aprPercentToDecimal,
   effectiveApr,
   monthlyInterest,
   sumBalance,
+  totalCurrentPayments,
   sumLimits,
   sumMinimums,
   toDebtSnapshot,
@@ -37,7 +39,18 @@ describe('sums', () => {
 
     expect(sumBalance(tomes)).toBe(350);
     expect(sumMinimums(tomes)).toBe(35);
+    expect(totalCurrentPayments(tomes)).toBe(35);
     expect(sumLimits(tomes)).toBe(1500);
+  });
+
+  it('sums the current payment and falls back to the minimum', () => {
+    const tomes = [
+      tome({ minimumDebtPayment: 10, currentPayment: 100 }),
+      tome({ id: 't2', minimumDebtPayment: 25 }),
+      tome({ id: 't3', minimumDebtPayment: 5, currentPayment: 0 }),
+    ];
+
+    expect(totalCurrentPayments(tomes)).toBe(125);
   });
 
   it('treats non-numeric values as zero', () => {
@@ -45,11 +58,13 @@ describe('sums', () => {
 
     expect(sumBalance(broken)).toBe(0);
     expect(sumMinimums(broken)).toBe(10);
+    expect(totalCurrentPayments(broken)).toBe(10);
   });
 
   it('returns zero for an empty list', () => {
     expect(sumBalance([])).toBe(0);
     expect(sumMinimums([])).toBe(0);
+    expect(totalCurrentPayments([])).toBe(0);
     expect(sumLimits([])).toBe(0);
   });
 });
@@ -126,5 +141,13 @@ describe('monthlyInterest', () => {
   it('divides the annual rate by twelve', () => {
     expect(monthlyInterest(1200, 0.12)).toBeCloseTo(12);
     expect(monthlyInterest(0, 0.5)).toBe(0);
+  });
+});
+
+describe('aprPercentToDecimal', () => {
+  it('converts a percentage APR to the decimal the API expects', () => {
+    expect(aprPercentToDecimal(19.99)).toBeCloseTo(0.1999);
+    expect(aprPercentToDecimal(0)).toBe(0);
+    expect(aprPercentToDecimal(100)).toBe(1);
   });
 });

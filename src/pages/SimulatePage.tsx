@@ -1,85 +1,83 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
-import { useLocation } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { archiveApi } from '../services/archive';
 import { simulationApi } from '../services/simulation';
 import { tomesApi } from '../services/tomes';
 import { useApiResource } from '../lib/use-api-resource';
 import { errorMessage } from '../lib/api';
-import { monthlyInterest, sumBalance, sumMinimums, weightedApr } from '../lib/accounts';
+import {
+  sumBalance,
+  totalCurrentPayments,
+  sumMinimums,
+  weightedApr,
+} from '../lib/accounts';
 import { money, percent, strategyLabel, toNumber } from '../lib/format';
-import { saveLastRun } from '../lib/last-run';
-import type { Scenario, SimulationInput, SimulationResult, StrategyType } from '../types/api';
-import { STRATEGY_TYPES } from '../types/api';
-import { Alert, Field, PageHeader, Section } from '../components/ui';
-import { SimulationResultView } from '../components/SimulationResultView';
+import type { PlanRunRequest, PlanTimeline, PlanType, Scenario, Tome } from '../types/api';
+import { PLAN_TYPES } from '../types/api';
+import { Alert, EmptyState, Field, PageHeader, Section, Spinner } from '../components/ui';
+import { PlanTimelineView } from '../components/PlanTimelineView';
 
 interface SimForm {
-  principal: string;
-  aprPct: string;
-  termMonths: string;
-  minimumPayment: string;
+  plan: PlanType;
+  startMonth: string;
+  horizonMonths: string;
   extraPayment: string;
   lumpSumPayment: string;
-  strategy: StrategyType;
+  lumpSumMonth: string;
 }
 
-function isStrategyType(value: string): value is StrategyType {
-  return (STRATEGY_TYPES as string[]).includes(value);
+function currentMonth(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function isPlanType(value: string): value is PlanType {
+  return (PLAN_TYPES as string[]).includes(value);
+}
+
+function scenarioPlan(value: string): PlanType | null {
+  if (value === 'MINIMUM_ONLY') return 'MINIMUM';
+  return isPlanType(value) ? value : null;
+}
+
+function isStrategyPlan(plan: PlanType): boolean {
+  return plan === 'SNOWBALL' || plan === 'AVALANCHE' || plan === 'HYBRID';
 }
 
 function initialForm(preset?: Scenario): SimForm {
   return {
-    principal: '',
-    aprPct: '',
-    termMonths: '60',
-    minimumPayment: '',
+    plan: preset ? (scenarioPlan(preset.strategy) ?? 'CURRENT') : 'CURRENT',
+    startMonth: currentMonth(),
+    horizonMonths: '120',
     extraPayment: preset ? String(preset.extraPayment ?? 0) : '0',
     lumpSumPayment: preset ? String(preset.lumpSumPayment ?? 0) : '0',
-    strategy: preset && isStrategyType(preset.strategy) ? preset.strategy : 'SNOWBALL',
+    lumpSumMonth: '1',
   };
 }
 
-function buildInput(form: SimForm): SimulationInput {
-  return {
-    principal: toNumber(form.principal),
-    interestRate: toNumber(form.aprPct) / 100,
-    termMonths: Math.round(toNumber(form.termMonths)),
-    minimumPayment: toNumber(form.minimumPayment),
-    extraPayment: toNumber(form.extraPayment || '0'),
-    lumpSumPayment: toNumber(form.lumpSumPayment || '0'),
-    strategy: form.strategy,
-  };
-}
+function validate(form: SimForm, selectedCount: number): string | null {
+  if (selectedCount === 0) return 'Select at least one account to simulate.';
+  if (!form.startMonth) return 'Choose a start month.';
 
-function validate(input: SimulationInput): string | null {
-  if (!Number.isFinite(input.principal) || input.principal <= 0) {
-    return 'Starting balance must be greater than zero.';
-  }
-  if (!Number.isFinite(input.interestRate) || input.interestRate < 0) {
-    return 'APR must be zero or more.';
-  }
-  if (!Number.isFinite(input.termMonths) || input.termMonths < 1) {
-    return 'Term must be at least 1 month.';
-  }
-  if (!Number.isFinite(input.minimumPayment) || input.minimumPayment <= 0) {
-    return 'Minimum payment must be greater than zero.';
-  }
-  if (!Number.isFinite(input.extraPayment) || input.extraPayment < 0) {
-    return 'Extra payment must be zero or more.';
-  }
-  if (!Number.isFinite(input.lumpSumPayment) || input.lumpSumPayment < 0) {
-    return 'Lump sum must be zero or more.';
+  const horizon = toNumber(form.horizonMonths);
+  if (!Number.isFinite(horizon) || horizon < 1 || horizon > 600) {
+    return 'Horizon must be between 1 and 600 months.';
   }
 
-  // Important: the engine loops until the balance reaches zero. If the payment
-  // does not cover the first month's interest the balance never falls.
-  const interest = monthlyInterest(input.principal, input.interestRate);
-  const payment = input.minimumPayment + input.extraPayment;
-  if (payment <= interest) {
-    return `A monthly payment of ${money(payment)} does not cover ${money(
-      interest,
-    )} of monthly interest, so the balance would never be repaid.`;
+  if (isStrategyPlan(form.plan)) {
+    const extra = toNumber(form.extraPayment || '0');
+    if (!Number.isFinite(extra) || extra < 0) {
+      return 'Extra payment must be zero or more.';
+    }
+    const lump = toNumber(form.lumpSumPayment || '0');
+    if (!Number.isFinite(lump) || lump < 0) {
+      return 'Lump sum must be zero or more.';
+    }
+    const lumpMonth = toNumber(form.lumpSumMonth);
+    if (!Number.isFinite(lumpMonth) || lumpMonth < 1 || lumpMonth > horizon) {
+      return 'Lump-sum month must be within the horizon.';
+    }
   }
 
   return null;
@@ -93,41 +91,37 @@ export function SimulatePage() {
   const tomes = useApiResource(loadTomes);
 
   const [form, setForm] = useState<SimForm>(() => initialForm(preset));
+  const [deselected, setDeselected] = useState<string[]>([]);
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [run, setRun] = useState<{ input: SimulationInput; result: SimulationResult } | null>(null);
+  const [timeline, setTimeline] = useState<PlanTimeline | null>(null);
 
   const [scenarioName, setScenarioName] = useState('');
   const [saveBusy, setSaveBusy] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
 
-  const accounts = tomes.data ?? [];
+  const accounts = useMemo(() => tomes.data ?? [], [tomes.data]);
+  const selected = useMemo(
+    () => accounts.filter((account) => !deselected.includes(account.id)),
+    [accounts, deselected],
+  );
+  const strategy = isStrategyPlan(form.plan);
 
   function update<K extends keyof SimForm>(key: K, value: SimForm[K]) {
     setForm((current) => ({ ...current, [key]: value }));
   }
 
-  function fillFromAccounts() {
-    if (accounts.length === 0) return;
-
-    const balance = sumBalance(accounts);
-    const minimums = sumMinimums(accounts);
-    const apr = weightedApr(accounts);
-
-    setForm((current) => ({
-      ...current,
-      principal: balance.toFixed(2),
-      minimumPayment: minimums.toFixed(2),
-      aprPct: apr.toFixed(2),
-    }));
+  function toggleAccount(id: string) {
+    setDeselected((current) =>
+      current.includes(id) ? current.filter((value) => value !== id) : [...current, id],
+    );
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
 
-    const input = buildInput(form);
-    const problem = validate(input);
+    const problem = validate(form, selected.length);
     if (problem) {
       setFormError(problem);
       return;
@@ -138,9 +132,16 @@ export function SimulatePage() {
     setSaveNotice(null);
     setSaveError(null);
     try {
-      const result = await simulationApi.run(input);
-      setRun({ input, result });
-      saveLastRun(result);
+      const request: PlanRunRequest = {
+        tomeIds: selected.map((account) => account.id),
+        plan: form.plan,
+        startMonth: `${form.startMonth}-01`,
+        horizonMonths: Math.round(toNumber(form.horizonMonths)),
+        extraPayment: strategy ? toNumber(form.extraPayment || '0') : 0,
+        lumpSumPayment: strategy ? toNumber(form.lumpSumPayment || '0') : 0,
+        lumpSumMonth: strategy ? Math.round(toNumber(form.lumpSumMonth)) : 1,
+      };
+      setTimeline(await simulationApi.runPlan(request));
     } catch (error) {
       setFormError(errorMessage(error));
     } finally {
@@ -150,7 +151,7 @@ export function SimulatePage() {
 
   async function handleSaveScenario(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!run) return;
+    if (!timeline) return;
 
     const name = scenarioName.trim();
     if (!name) {
@@ -164,12 +165,12 @@ export function SimulatePage() {
     try {
       await archiveApi.create({
         name,
-        strategy: run.input.strategy,
-        extraPayment: run.input.extraPayment,
-        lumpSumPayment: run.input.lumpSumPayment,
+        strategy: timeline.plan,
+        extraPayment: strategy ? toNumber(form.extraPayment || '0') : 0,
+        lumpSumPayment: strategy ? toNumber(form.lumpSumPayment || '0') : 0,
       });
       setScenarioName('');
-      setSaveNotice(`Saved "${name}". The balance and term are not stored with a scenario.`);
+      setSaveNotice(`Saved "${name}". Scenarios store the plan and payments, not balances.`);
     } catch (error) {
       setSaveError(errorMessage(error));
     } finally {
@@ -181,174 +182,225 @@ export function SimulatePage() {
     <div className="stack-lg">
       <PageHeader
         title="Simulate"
-        subtitle="Month-by-month payoff projection from a single balance."
+        subtitle="A month-by-month payoff timeline for your accounts."
       />
 
-      {preset ? (
-        <Alert tone="info">
-          Prefilled strategy and extra payments from <strong>{preset.name}</strong>. Scenarios do not
-          store a balance or term, so fill those in.
+      {tomes.error ? (
+        <Alert>
+          {tomes.error}{' '}
+          <button type="button" className="btn btn-ghost btn-sm" onClick={tomes.reload}>
+            Retry
+          </button>
         </Alert>
       ) : null}
 
-      <Section
-        title="Inputs"
-        description="APR is entered as a percentage; it is sent to the API as a decimal."
-        actions={
-          <button
-            type="button"
-            className="btn btn-ghost btn-sm"
-            onClick={fillFromAccounts}
-            disabled={accounts.length === 0}
-          >
-            {tomes.loading ? 'Loading accounts…' : 'Fill from my accounts'}
-          </button>
-        }
-      >
-        <form className="stack" onSubmit={handleSubmit} noValidate>
-          <div className="grid grid-3">
-            <Field label="Starting balance">
-              <input
-                className="input"
-                type="number"
-                min="0"
-                step="0.01"
-                value={form.principal}
-                onChange={(event) => update('principal', event.target.value)}
-                placeholder="1000"
-                required
-              />
-            </Field>
+      {preset ? (
+        <Alert tone="info">
+          Prefilled plan and payments from <strong>{preset.name}</strong>. Choose the accounts and
+          confirm the horizon.
+        </Alert>
+      ) : null}
 
-            <Field label="APR %" hint="Annual percentage rate">
-              <input
-                className="input"
-                type="number"
-                min="0"
-                step="0.01"
-                value={form.aprPct}
-                onChange={(event) => update('aprPct', event.target.value)}
-                placeholder="20"
-                required
-              />
-            </Field>
-
-            <Field label="Term (months)">
-              <input
-                className="input"
-                type="number"
-                min="1"
-                step="1"
-                value={form.termMonths}
-                onChange={(event) => update('termMonths', event.target.value)}
-                required
-              />
-            </Field>
-
-            <Field label="Minimum payment">
-              <input
-                className="input"
-                type="number"
-                min="0"
-                step="0.01"
-                value={form.minimumPayment}
-                onChange={(event) => update('minimumPayment', event.target.value)}
-                placeholder="50"
-                required
-              />
-            </Field>
-
-            <Field label="Extra per month">
-              <input
-                className="input"
-                type="number"
-                min="0"
-                step="0.01"
-                value={form.extraPayment}
-                onChange={(event) => update('extraPayment', event.target.value)}
-              />
-            </Field>
-
-            <Field label="One-time lump sum">
-              <input
-                className="input"
-                type="number"
-                min="0"
-                step="0.01"
-                value={form.lumpSumPayment}
-                onChange={(event) => update('lumpSumPayment', event.target.value)}
-              />
-            </Field>
-          </div>
-
-          <div className="grid grid-3">
-            <Field label="Strategy" hint="Recorded, but a single balance has nothing to reorder">
-              <select
-                className="input"
-                value={form.strategy}
-                onChange={(event) => update('strategy', event.target.value as StrategyType)}
-              >
-                {STRATEGY_TYPES.map((strategy) => (
-                  <option key={strategy} value={strategy}>
-                    {strategyLabel(strategy)}
-                  </option>
-                ))}
-              </select>
-            </Field>
-          </div>
-
-          {accounts.length > 0 ? (
-            <p className="muted small">
-              From your accounts: {money(sumBalance(accounts))} balance ·{' '}
-              {money(sumMinimums(accounts))} minimums · {percent(weightedApr(accounts))} avg APR.
-            </p>
-          ) : null}
-
-          {formError ? <Alert>{formError}</Alert> : null}
-
-          <div className="form-actions">
-            <button type="submit" className="btn btn-primary" disabled={busy}>
-              {busy ? 'Running…' : 'Run simulation'}
-            </button>
-          </div>
-        </form>
-      </Section>
-
-      {run ? (
-        <Section
-          title="Result"
-          description="Returned by POST /api/assemble/run"
-          actions={
-            <button type="button" className="btn btn-ghost btn-sm" onClick={() => setRun(null)}>
-              Clear
-            </button>
+      {tomes.loading ? (
+        <Spinner label="Loading accounts…" />
+      ) : accounts.length === 0 ? (
+        <EmptyState
+          title="No accounts to simulate"
+          description="Add a card, loan or line of credit first."
+          action={
+            <Link className="btn btn-primary btn-sm" to="/app/accounts">
+              Add an account
+            </Link>
           }
-        >
-          <div className="stack">
-            <SimulationResultView result={run.result} />
+        />
+      ) : (
+        <>
+          <Section
+            title="Accounts"
+            description={`${selected.length} of ${accounts.length} selected · ${money(
+              selected.reduce((total, account) => total + account.currentBalance, 0),
+            )} balance`}
+            actions={
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setDeselected([])}
+                disabled={deselected.length === 0}
+              >
+                Select all
+              </button>
+            }
+          >
+            <div className="check-list">
+              {accounts.map((account: Tome) => {
+                const checked = !deselected.includes(account.id);
+                return (
+                  <label
+                    key={account.id}
+                    className={`check-row${checked ? ' check-row-on' : ''}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleAccount(account.id)}
+                    />
+                    <span className="check-main">
+                      <span className="cell-strong">{account.name}</span>
+                      <span className="cell-sub">
+                        {percent(account.apr ?? account.estimatedApr)} APR ·{' '}
+                        {money(account.minimumDebtPayment)} min ·{' '}
+                        {money(account.currentPayment ?? account.minimumDebtPayment)} current
+                      </span>
+                    </span>
+                    <span className="muted small">{money(account.currentBalance)}</span>
+                  </label>
+                );
+              })}
+            </div>
+            <p className="muted small">
+              Selected: {money(sumBalance(selected))} balance · {money(sumMinimums(selected))}{' '}
+              minimums · {money(totalCurrentPayments(selected))} current ·{' '}
+              {percent(weightedApr(selected))} avg APR.
+            </p>
+          </Section>
 
-            <div className="save-row">
-              <form className="save-form" onSubmit={handleSaveScenario}>
-                <Field label="Save these inputs as a scenario">
+          <Section
+            title="Plan"
+            description="Strategies only change how surplus above the minimums is allocated."
+          >
+            <form className="stack" onSubmit={handleSubmit} noValidate>
+              <div className="grid grid-3">
+                <Field label="Plan">
+                  <select
+                    className="input"
+                    value={form.plan}
+                    onChange={(event) => update('plan', event.target.value as PlanType)}
+                  >
+                    {PLAN_TYPES.map((plan) => (
+                      <option key={plan} value={plan}>
+                        {strategyLabel(plan)}
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+
+                <Field label="Start month">
                   <input
                     className="input"
-                    type="text"
-                    value={scenarioName}
-                    onChange={(event) => setScenarioName(event.target.value)}
-                    placeholder="e.g. Card payoff at $75/mo"
+                    type="month"
+                    value={form.startMonth}
+                    onChange={(event) => update('startMonth', event.target.value)}
+                    required
                   />
                 </Field>
-                <button type="submit" className="btn btn-ghost" disabled={saveBusy}>
-                  {saveBusy ? 'Saving…' : 'Save scenario'}
-                </button>
-              </form>
-            </div>
 
-            {saveError ? <Alert>{saveError}</Alert> : null}
-            {saveNotice ? <Alert tone="success">{saveNotice}</Alert> : null}
-          </div>
-        </Section>
-      ) : null}
+                <Field label="Horizon (months)" hint="Maximum 600">
+                  <input
+                    className="input"
+                    type="number"
+                    min="1"
+                    max="600"
+                    step="1"
+                    value={form.horizonMonths}
+                    onChange={(event) => update('horizonMonths', event.target.value)}
+                    required
+                  />
+                </Field>
+
+                <Field
+                  label="Extra per month"
+                  hint={strategy ? 'Added to the minimums' : 'Ignored by this plan'}
+                >
+                  <input
+                    className="input"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={form.extraPayment}
+                    onChange={(event) => update('extraPayment', event.target.value)}
+                    disabled={!strategy}
+                  />
+                </Field>
+
+                <Field
+                  label="One-time lump sum"
+                  hint={strategy ? 'Applied once' : 'Ignored by this plan'}
+                >
+                  <input
+                    className="input"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={form.lumpSumPayment}
+                    onChange={(event) => update('lumpSumPayment', event.target.value)}
+                    disabled={!strategy}
+                  />
+                </Field>
+
+                <Field label="Lump-sum month">
+                  <input
+                    className="input"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={form.lumpSumMonth}
+                    onChange={(event) => update('lumpSumMonth', event.target.value)}
+                    disabled={!strategy}
+                  />
+                </Field>
+              </div>
+
+              {formError ? <Alert>{formError}</Alert> : null}
+
+              <div className="form-actions">
+                <button type="submit" className="btn btn-primary" disabled={busy}>
+                  {busy ? 'Running…' : 'Run plan'}
+                </button>
+              </div>
+            </form>
+          </Section>
+
+          {timeline ? (
+            <Section
+              title="Timeline"
+              description={`POST /api/simulate/run · ${strategyLabel(timeline.plan)}`}
+              actions={
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setTimeline(null)}
+                >
+                  Clear
+                </button>
+              }
+            >
+              <div className="stack">
+                <PlanTimelineView timeline={timeline} />
+
+                <div className="save-row">
+                  <form className="save-form" onSubmit={handleSaveScenario}>
+                    <Field label="Save this plan as a scenario">
+                      <input
+                        className="input"
+                        type="text"
+                        value={scenarioName}
+                        onChange={(event) => setScenarioName(event.target.value)}
+                        placeholder="e.g. Avalanche at $75/mo"
+                      />
+                    </Field>
+                    <button type="submit" className="btn btn-ghost" disabled={saveBusy}>
+                      {saveBusy ? 'Saving…' : 'Save scenario'}
+                    </button>
+                  </form>
+                </div>
+
+                {saveError ? <Alert>{saveError}</Alert> : null}
+                {saveNotice ? <Alert tone="success">{saveNotice}</Alert> : null}
+              </div>
+            </Section>
+          ) : null}
+        </>
+      )}
     </div>
   );
 }

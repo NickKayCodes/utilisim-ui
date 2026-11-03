@@ -143,6 +143,31 @@ describe('simulationApi', () => {
 
     expect(apiMock).toHaveBeenCalledWith('/api/assemble/run', { method: 'POST', body });
   });
+
+  it('runs a single ledger plan', async () => {
+    const body = { tomeIds: ['t1'], plan: 'CURRENT' as const };
+
+    await simulationApi.runPlan(body);
+
+    expect(apiMock).toHaveBeenCalledWith('/api/simulate/run', { method: 'POST', body });
+  });
+
+  it('compares plans and reads persisted results', async () => {
+    const body = { tomeIds: ['t1'], extraPayment: 100 };
+
+    await simulationApi.compare(body);
+    await simulationApi.getRun(7);
+    await simulationApi.getComparison('group/id');
+    await simulationApi.history(5);
+
+    expect(apiMock).toHaveBeenNthCalledWith(1, '/api/simulate/compare', {
+      method: 'POST',
+      body,
+    });
+    expect(apiMock).toHaveBeenNthCalledWith(2, '/api/simulate/runs/7');
+    expect(apiMock).toHaveBeenNthCalledWith(3, '/api/simulate/comparisons/group%2Fid');
+    expect(apiMock).toHaveBeenNthCalledWith(4, '/api/simulate/runs?limit=5');
+  });
 });
 
 describe('tomesApi', () => {

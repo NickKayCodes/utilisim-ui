@@ -579,6 +579,31 @@ code {
   font-size: 12px;
 }
 
+.plan-card {
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease;
+}
+
+.plan-card:hover {
+  border-color: #33455a;
+}
+
+.plan-card-on {
+  border-color: rgba(61, 220, 151, 0.45);
+  background: rgba(61, 220, 151, 0.06);
+}
+
+.plan-card .stat-label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 /* ---------------------------------------------------------------- fields */
 
 .field {
@@ -741,6 +766,17 @@ select.input {
   text-align: right;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+.table .month-row-first td {
+  background: rgba(61, 220, 151, 0.045);
+  font-weight: 600;
+}
+
+.table .debt-row td {
+  background: rgba(255, 255, 255, 0.015);
+  color: var(--muted);
+  font-size: 12.5px;
 }
 
 .cell-strong {

@@ -1,113 +1,126 @@
 import { useCallback, useMemo, useState } from 'react';
+import type { FormEvent } from 'react';
+import { Link } from 'react-router-dom';
 import { tomesApi } from '../services/tomes';
-import { oracleApi } from '../services/oracle';
+import { simulationApi } from '../services/simulation';
 import { useApiResource } from '../lib/use-api-resource';
 import { errorMessage } from '../lib/api';
-import { effectiveApr, toDebtSnapshot } from '../lib/accounts';
-import { money, percent, strategyLabel } from '../lib/format';
-import type { StrategyAnalysis, StrategyOutput, StrategyType } from '../types/api';
-import { STRATEGY_TYPES } from '../types/api';
-import { Alert, Badge, EmptyState, PageHeader, Section, Spinner } from '../components/ui';
+import { sumBalance, totalCurrentPayments } from '../lib/accounts';
+import { money, monthsLabel, percent, strategyLabel, toNumber } from '../lib/format';
+import type { ComparisonResponse, PlanType } from '../types/api';
+import { PLAN_TYPES } from '../types/api';
+import { Alert, Badge, EmptyState, Field, PageHeader, Section, Spinner } from '../components/ui';
+import { PlanTimelineView } from '../components/PlanTimelineView';
 
-type BusyAction = 'recommend' | 'order' | 'analyze' | null;
+interface CompareForm {
+  startMonth: string;
+  horizonMonths: string;
+  extraPayment: string;
+  lumpSumPayment: string;
+  lumpSumMonth: string;
+}
+
+function currentMonth(): string {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function validate(form: CompareForm, selectedCount: number): string | null {
+  if (selectedCount === 0) return 'Select at least one account to compare.';
+  if (!form.startMonth) return 'Choose a start month.';
+
+  const horizon = toNumber(form.horizonMonths);
+  if (!Number.isFinite(horizon) || horizon < 1 || horizon > 600) {
+    return 'Horizon must be between 1 and 600 months.';
+  }
+  const extra = toNumber(form.extraPayment || '0');
+  if (!Number.isFinite(extra) || extra < 0) {
+    return 'Extra payment must be zero or more.';
+  }
+  const lump = toNumber(form.lumpSumPayment || '0');
+  if (!Number.isFinite(lump) || lump < 0) {
+    return 'Lump sum must be zero or more.';
+  }
+  const lumpMonth = toNumber(form.lumpSumMonth);
+  if (!Number.isFinite(lumpMonth) || lumpMonth < 1 || lumpMonth > horizon) {
+    return 'Lump-sum month must be within the horizon.';
+  }
+  return null;
+}
 
 export function ComparePage() {
   const loadTomes = useCallback(() => tomesApi.list(), []);
   const tomes = useApiResource(loadTomes);
 
-  // Selection is stored as "deselected" so every account is included by default
-  // without needing to sync state once the list arrives.
   const [deselected, setDeselected] = useState<string[]>([]);
-  const [strategies, setStrategies] = useState<StrategyType[]>(['SNOWBALL', 'AVALANCHE']);
-  const [orderStrategy, setOrderStrategy] = useState<StrategyType>('SNOWBALL');
-
-  const [busy, setBusy] = useState<BusyAction>(null);
+  const [form, setForm] = useState<CompareForm>({
+    startMonth: currentMonth(),
+    horizonMonths: '120',
+    extraPayment: '75',
+    lumpSumPayment: '0',
+    lumpSumMonth: '1',
+  });
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [comparison, setComparison] = useState<ComparisonResponse | null>(null);
+  const [selectedPlan, setSelectedPlan] = useState<PlanType | null>(null);
 
-  const [recommendation, setRecommendation] = useState<string | null>(null);
-  const [order, setOrder] = useState<StrategyOutput | null>(null);
-  const [analysis, setAnalysis] = useState<StrategyAnalysis | null>(null);
-
-  const accounts = tomes.data;
-
+  const accounts = useMemo(() => tomes.data ?? [], [tomes.data]);
   const selected = useMemo(
-    () => (accounts ?? []).filter((account) => !deselected.includes(account.id)),
+    () => accounts.filter((account) => !deselected.includes(account.id)),
     [accounts, deselected],
   );
 
-  const debts = useMemo(() => selected.map(toDebtSnapshot), [selected]);
+  function update<K extends keyof CompareForm>(key: K, value: CompareForm[K]) {
+    setForm((current) => ({ ...current, [key]: value }));
+  }
 
-  function toggleDebt(id: string) {
+  function toggleAccount(id: string) {
     setDeselected((current) =>
       current.includes(id) ? current.filter((value) => value !== id) : [...current, id],
     );
   }
 
-  function toggleStrategy(strategy: StrategyType) {
-    setStrategies((current) =>
-      current.includes(strategy)
-        ? current.filter((value) => value !== strategy)
-        : [...current, strategy],
-    );
-  }
+  async function handleCompare(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
 
-  async function handleRecommend() {
-    if (debts.length === 0) return;
-    setBusy('recommend');
+    const problem = validate(form, selected.length);
+    if (problem) {
+      setError(problem);
+      return;
+    }
+
+    setBusy(true);
     setError(null);
-    setRecommendation(null);
     try {
-      setRecommendation(await oracleApi.recommend(debts));
+      const response = await simulationApi.compare({
+        tomeIds: selected.map((account) => account.id),
+        startMonth: `${form.startMonth}-01`,
+        horizonMonths: Math.round(toNumber(form.horizonMonths)),
+        extraPayment: toNumber(form.extraPayment || '0'),
+        lumpSumPayment: toNumber(form.lumpSumPayment || '0'),
+        lumpSumMonth: Math.round(toNumber(form.lumpSumMonth)),
+        plans: PLAN_TYPES,
+      });
+      setComparison(response);
+      setSelectedPlan(response.recommendedPlan ?? response.plans[0]?.plan ?? null);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
-      setBusy(null);
+      setBusy(false);
     }
   }
 
-  async function handleOrder() {
-    if (debts.length === 0) return;
-    setBusy('order');
-    setError(null);
-    setOrder(null);
-    try {
-      setOrder(
-        await oracleApi.order(debts, {
-          strategyType: orderStrategy,
-          extraPayment: 0,
-          lumpSumPayment: 0,
-        }),
-      );
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  async function handleAnalyze() {
-    if (debts.length === 0 || strategies.length === 0) return;
-    setBusy('analyze');
-    setError(null);
-    setAnalysis(null);
-    try {
-      setAnalysis(
-        await oracleApi.analyze(debts, strategies, { extraPayment: 0, lumpSumPayment: 0 }),
-      );
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  const totalBalance = selected.reduce((total, account) => total + account.currentBalance, 0);
+  const selectedTimeline =
+    comparison?.plans.find((plan) => plan.plan === selectedPlan) ??
+    comparison?.plans[0] ??
+    null;
 
   return (
     <div className="stack-lg">
       <PageHeader
-        title="Compare strategies"
-        subtitle="Order your real accounts with the Oracle endpoints, then compare projections."
+        title="Compare plans"
+        subtitle="Five payoff timelines over the same accounts and budget."
       />
 
       {tomes.error ? (
@@ -123,203 +136,190 @@ export function ComparePage() {
 
       {tomes.loading ? (
         <Spinner label="Loading accounts…" />
-      ) : !accounts || accounts.length === 0 ? (
+      ) : accounts.length === 0 ? (
         <EmptyState
           title="No accounts to compare"
-          description="Add at least one account first — the Oracle needs balances, APRs and minimum payments."
+          description="Add at least one account first — the ledger needs balances, APRs and minimums."
+          action={
+            <Link className="btn btn-primary btn-sm" to="/app/accounts">
+              Add an account
+            </Link>
+          }
         />
       ) : (
         <>
-          <div className="grid grid-2 grid-align-start">
-            <Section
-              title="Debts in play"
-              description={`${selected.length} of ${accounts.length} selected · ${money(totalBalance)} total`}
-              actions={
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => setDeselected([])}
-                  disabled={deselected.length === 0}
-                >
-                  Select all
-                </button>
-              }
-            >
-              <div className="check-list">
-                {accounts.map((account) => {
-                  const checked = !deselected.includes(account.id);
-                  return (
-                    <label
-                      key={account.id}
-                      className={`check-row${checked ? ' check-row-on' : ''}`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleDebt(account.id)}
-                      />
-                      <span className="check-main">
-                        <span className="cell-strong">{account.name}</span>
-                        <span className="cell-sub">
-                          {percent(effectiveApr(account))} APR · {money(account.currentBalance)}
-                        </span>
-                      </span>
-                      <span className="muted small">{money(account.minimumDebtPayment)}/mo</span>
-                    </label>
-                  );
-                })}
-              </div>
-            </Section>
-
-            <Section title="Strategies to compare" description="Used by the analyze endpoint">
-              <div className="pill-row">
-                {STRATEGY_TYPES.map((strategy) => {
-                  const active = strategies.includes(strategy);
-                  return (
-                    <button
-                      key={strategy}
-                      type="button"
-                      className={`pill${active ? ' pill-on' : ''}`}
-                      aria-pressed={active}
-                      onClick={() => toggleStrategy(strategy)}
-                    >
-                      {strategyLabel(strategy)}
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="divider" />
-
-              <div className="inline-actions">
-                <label className="field field-inline">
-                  <span className="field-label">Order by</span>
-                  <select
-                    className="input"
-                    value={orderStrategy}
-                    onChange={(event) => setOrderStrategy(event.target.value as StrategyType)}
+          <Section
+            title="Accounts"
+            description={`${selected.length} of ${accounts.length} selected · ${money(
+              sumBalance(selected),
+            )} balance · ${money(totalCurrentPayments(selected))} current`}
+            actions={
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setDeselected([])}
+                disabled={deselected.length === 0}
+              >
+                Select all
+              </button>
+            }
+          >
+            <div className="check-list">
+              {accounts.map((account) => {
+                const checked = !deselected.includes(account.id);
+                return (
+                  <label
+                    key={account.id}
+                    className={`check-row${checked ? ' check-row-on' : ''}`}
                   >
-                    {STRATEGY_TYPES.map((strategy) => (
-                      <option key={strategy} value={strategy}>
-                        {strategyLabel(strategy)}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleAccount(account.id)}
+                    />
+                    <span className="check-main">
+                      <span className="cell-strong">{account.name}</span>
+                      <span className="cell-sub">
+                        {percent(account.apr ?? account.estimatedApr)} APR ·{' '}
+                        {money(account.currentBalance)}
+                      </span>
+                    </span>
+                    <span className="muted small">
+                      {money(account.currentPayment ?? account.minimumDebtPayment)}/mo
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </Section>
+
+          <Section
+            title="Budget"
+            description="Extra and lump sums are allocated by the three strategy plans; CURRENT and MINIMUM ignore them."
+          >
+            <form className="stack" onSubmit={handleCompare} noValidate>
+              <div className="grid grid-3">
+                <Field label="Start month">
+                  <input
+                    className="input"
+                    type="month"
+                    value={form.startMonth}
+                    onChange={(event) => update('startMonth', event.target.value)}
+                    required
+                  />
+                </Field>
+                <Field label="Horizon (months)" hint="Maximum 600">
+                  <input
+                    className="input"
+                    type="number"
+                    min="1"
+                    max="600"
+                    step="1"
+                    value={form.horizonMonths}
+                    onChange={(event) => update('horizonMonths', event.target.value)}
+                    required
+                  />
+                </Field>
+                <Field label="Extra per month">
+                  <input
+                    className="input"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={form.extraPayment}
+                    onChange={(event) => update('extraPayment', event.target.value)}
+                  />
+                </Field>
+                <Field label="One-time lump sum">
+                  <input
+                    className="input"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={form.lumpSumPayment}
+                    onChange={(event) => update('lumpSumPayment', event.target.value)}
+                  />
+                </Field>
+                <Field label="Lump-sum month">
+                  <input
+                    className="input"
+                    type="number"
+                    min="1"
+                    step="1"
+                    value={form.lumpSumMonth}
+                    onChange={(event) => update('lumpSumMonth', event.target.value)}
+                  />
+                </Field>
               </div>
 
               <div className="form-actions">
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  onClick={handleRecommend}
-                  disabled={busy !== null || debts.length === 0}
-                >
-                  {busy === 'recommend' ? 'Working…' : 'Recommend'}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  onClick={handleOrder}
-                  disabled={busy !== null || debts.length === 0}
-                >
-                  {busy === 'order' ? 'Working…' : 'Order debts'}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-ghost"
-                  onClick={handleAnalyze}
-                  disabled={busy !== null || debts.length === 0 || strategies.length === 0}
-                >
-                  {busy === 'analyze' ? 'Working…' : 'Analyze'}
+                <button type="submit" className="btn btn-primary" disabled={busy}>
+                  {busy ? 'Comparing…' : 'Compare plans'}
                 </button>
               </div>
+            </form>
+          </Section>
 
-              {debts.length === 0 ? (
-                <p className="muted small">Select at least one account to enable these actions.</p>
+          {comparison ? (
+            <>
+              <Section
+                title="Plans"
+                description={
+                  comparison.recommendedPlan
+                    ? `${strategyLabel(comparison.recommendedPlan)} recommended — ${comparison.recommendationBasis}`
+                    : comparison.recommendationBasis
+                }
+              >
+                <div className="grid grid-3">
+                  {comparison.plans.map((plan) => {
+                    const recommended = comparison.recommendedPlan === plan.plan;
+                    return (
+                      <button
+                        key={plan.plan}
+                        type="button"
+                        className={`stat plan-card${
+                          selectedTimeline?.plan === plan.plan ? ' plan-card-on' : ''
+                        }`}
+                        aria-pressed={selectedTimeline?.plan === plan.plan}
+                        onClick={() => setSelectedPlan(plan.plan)}
+                      >
+                        <span className="stat-label">
+                          {strategyLabel(plan.plan)}{' '}
+                          {recommended ? <Badge tone="ok">recommended</Badge> : null}
+                        </span>
+                        <span className="stat-value">
+                          {plan.terminationReason === 'PAID_OFF'
+                            ? monthsLabel(plan.monthsToPayoff)
+                            : 'Not repaid'}
+                        </span>
+                        <span className="stat-hint">
+                          Interest {money(plan.totalInterest)} · final {money(plan.finalBalance)}
+                        </span>
+                        <span className="stat-hint">
+                          {plan.peakUtilizationPct === null
+                            ? 'No credit limit'
+                            : `Peak ${percent(plan.peakUtilizationPct)}`}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                <p className="muted small">
+                  Ordering only changes the total when the plan pays more than the minimums. With
+                  extra at zero, equal totals are expected and the server tie-break picks Avalanche.
+                </p>
+              </Section>
+
+              {selectedTimeline ? (
+                <Section
+                  title={`${strategyLabel(selectedTimeline.plan)} timeline`}
+                  description={`POST /api/simulate/compare · ${selectedTimeline.status}`}
+                >
+                  <PlanTimelineView timeline={selectedTimeline} />
+                </Section>
               ) : null}
-              {strategies.length === 0 ? (
-                <p className="muted small">Pick at least one strategy for the analysis.</p>
-              ) : null}
-            </Section>
-          </div>
-
-          {recommendation ? (
-            <Section title="Recommended strategy" description="POST /api/oracle/strategy/recommend">
-              <div className="recommendation">
-                <span className="recommendation-label">Oracle suggests</span>
-                <span className="recommendation-value">{recommendation}</span>
-                <Badge tone="ok">based on {debts.length} account(s)</Badge>
-              </div>
-            </Section>
-          ) : null}
-
-          {order ? (
-            <Section
-              title={`Payoff order — ${strategyLabel(order.strategyName)}`}
-              description={order.description}
-            >
-              <ol className="order-list">
-                {order.orderedDebts.map((debt, index) => (
-                  <li key={debt.tomeId} className="order-row">
-                    <span className="order-rank">{index + 1}</span>
-                    <span className="order-main">
-                      <span className="cell-strong">{debt.accountName}</span>
-                      <span className="cell-sub">
-                        {percent(debt.interestRate)} APR · min {money(debt.minimumPayment)}
-                      </span>
-                    </span>
-                    <span className="order-balance">{money(debt.currentBalance)}</span>
-                  </li>
-                ))}
-              </ol>
-            </Section>
-          ) : null}
-
-          {analysis ? (
-            <Section
-              title="Strategy comparison"
-              description="POST /api/oracle/strategy/analyze"
-              actions={
-                analysis.recommendedStrategy ? (
-                  <Badge tone="ok">Recommended: {analysis.recommendedStrategy}</Badge>
-                ) : null
-              }
-            >
-              <div className="table-wrap">
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th>Strategy</th>
-                      <th className="num">Projected interest</th>
-                      <th className="num">Debts</th>
-                      <th>Notes</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {analysis.comparisons.map((comparison) => (
-                      <tr key={comparison.strategyName}>
-                        <td>
-                          <span className="cell-strong">{strategyLabel(comparison.strategyName)}</span>
-                          {analysis.recommendedStrategy === comparison.strategyName ? (
-                            <Badge tone="ok">best</Badge>
-                          ) : null}
-                        </td>
-                        <td className="num">{money(comparison.projectedInterest)}</td>
-                        <td className="num">{comparison.debtCount}</td>
-                        <td className="muted small">{comparison.description}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-
-              <p className="muted small">
-                Heads up: the backend currently returns the same projected interest for every
-                strategy (the projection is not strategy-sensitive yet). Use this view to check
-                payoff ordering, not to promise savings.
-              </p>
-            </Section>
+            </>
           ) : null}
         </>
       )}

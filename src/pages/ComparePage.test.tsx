@@ -1,28 +1,20 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ComparePage } from './ComparePage';
 import { ApiError } from '../lib/api';
-import type { StrategyAnalysis, StrategyOutput, Tome } from '../types/api';
+import type { ComparisonResponse, PlanTimeline, PlanType, Tome } from '../types/api';
+import { PLAN_TYPES } from '../types/api';
 
 vi.mock('../services/tomes', () => ({ tomesApi: { list: vi.fn() } }));
-vi.mock('../services/oracle', () => ({
-  oracleApi: {
-    order: vi.fn(),
-    recommend: vi.fn(),
-    analyze: vi.fn(),
-    totalInterest: vi.fn(),
-    isDeterministic: vi.fn(),
-  },
-}));
+vi.mock('../services/simulation', () => ({ simulationApi: { compare: vi.fn() } }));
 
 import { tomesApi } from '../services/tomes';
-import { oracleApi } from '../services/oracle';
+import { simulationApi } from '../services/simulation';
 
 const listTomes = vi.mocked(tomesApi.list);
-const recommend = vi.mocked(oracleApi.recommend);
-const order = vi.mocked(oracleApi.order);
-const analyze = vi.mocked(oracleApi.analyze);
+const compare = vi.mocked(simulationApi.compare);
 
 function tome(overrides: Partial<Tome> = {}): Tome {
   return {
@@ -41,56 +33,91 @@ function tome(overrides: Partial<Tome> = {}): Tome {
   };
 }
 
-const visaDebt = {
-  tomeId: 't1',
-  accountName: 'Visa',
-  currentBalance: 1200,
-  apr: 22,
-  estimatedApr: 22,
-  minimumPayment: 35,
-  interestRate: 22,
+function plan(
+  planType: PlanType,
+  overrides: Partial<PlanTimeline> = {},
+): PlanTimeline {
+  return {
+    runId: 1,
+    plan: planType,
+    label: planType,
+    status: 'COMPLETED',
+    terminationReason: 'PAID_OFF',
+    monthsToPayoff: 2,
+    payoffDate: '2026-03-01',
+    totalInterest: 12,
+    totalPaid: 1012,
+    finalBalance: 0,
+    peakUtilizationPct: 40,
+    months: [
+      {
+        monthIndex: 1,
+        monthLabel: `${planType} month 1`,
+        periodStart: '2026-01-01',
+        startingBalance: 1000,
+        monthlyInterest: 10,
+        minimumDue: 35,
+        actualPayment: 500,
+        extraPayment: 0,
+        lumpSumApplied: 0,
+        remainingBalance: 510,
+        utilizationPct: 40,
+        interestPaid: 10,
+        amountToCoverInterest: 10,
+        debts: [],
+      },
+      {
+        monthIndex: 2,
+        monthLabel: `${planType} month 2`,
+        periodStart: '2026-02-01',
+        startingBalance: 510,
+        monthlyInterest: 2,
+        minimumDue: 20,
+        actualPayment: 512,
+        extraPayment: 0,
+        lumpSumApplied: 0,
+        remainingBalance: 0,
+        utilizationPct: 0,
+        interestPaid: 2,
+        amountToCoverInterest: 2,
+        debts: [],
+      },
+    ],
+    ...overrides,
+  };
+}
+
+const comparison: ComparisonResponse = {
+  comparisonGroupId: 'group-1',
+  startMonth: '2026-01-01',
+  horizonMonths: 120,
+  totalBalance: 2000,
+  recommendedPlan: 'AVALANCHE',
+  recommendationBasis: 'Lowest total interest',
+  plans: PLAN_TYPES.map((planType) => plan(planType)),
 };
 
-const loanDebt = {
-  tomeId: 't2',
-  accountName: 'Loan',
-  currentBalance: 800,
-  apr: 6,
-  estimatedApr: 6,
-  minimumPayment: 20,
-  interestRate: 6,
-};
+function renderCompare() {
+  return render(
+    <MemoryRouter>
+      <ComparePage />
+    </MemoryRouter>,
+  );
+}
 
-const ordered: StrategyOutput = {
-  strategyName: 'SNOWBALL',
-  orderedDebts: [visaDebt, loanDebt],
-  description: 'Smallest balance first',
-};
+async function renderLoaded() {
+  const rendered = renderCompare();
+  await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
+  return rendered;
+}
 
-const analysis: StrategyAnalysis = {
-  comparisons: [
-    {
-      strategyName: 'SNOWBALL',
-      projectedInterest: 100,
-      debtCount: 2,
-      description: 'Smallest balance first',
-    },
-    {
-      strategyName: 'AVALANCHE',
-      projectedInterest: 100,
-      debtCount: 2,
-      description: 'Highest rate first',
-    },
-  ],
-  recommendedStrategy: 'AVALANCHE',
-  analysisNotes: null,
-};
+function setValue(label: RegExp, value: string) {
+  fireEvent.change(screen.getByLabelText(label), { target: { value } });
+}
 
 beforeEach(() => {
   listTomes.mockReset();
-  recommend.mockReset();
-  order.mockReset();
-  analyze.mockReset();
+  compare.mockReset();
   listTomes.mockResolvedValue([
     tome(),
     tome({
@@ -102,21 +129,13 @@ beforeEach(() => {
       minimumDebtPayment: 20,
     }),
   ]);
-  recommend.mockResolvedValue('AVALANCHE');
-  order.mockResolvedValue(ordered);
-  analyze.mockResolvedValue(analysis);
+  compare.mockResolvedValue(comparison);
 });
-
-async function renderLoaded() {
-  const rendered = render(<ComparePage />);
-  await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
-  return rendered;
-}
 
 describe('ComparePage', () => {
   it('shows an empty state without accounts', async () => {
     listTomes.mockResolvedValue([]);
-    render(<ComparePage />);
+    renderCompare();
 
     await waitFor(() => expect(screen.getByText('No accounts to compare')).toBeInTheDocument());
   });
@@ -126,7 +145,7 @@ describe('ComparePage', () => {
     listTomes
       .mockRejectedValueOnce(new ApiError(500, 'database down'))
       .mockResolvedValueOnce([tome()]);
-    render(<ComparePage />);
+    renderCompare();
 
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('database down'));
 
@@ -135,115 +154,84 @@ describe('ComparePage', () => {
     expect(listTomes).toHaveBeenCalledTimes(2);
   });
 
-  it('shows the selection summary and toggles accounts and strategies', async () => {
+  it('shows the selection summary and toggles accounts', async () => {
     const user = userEvent.setup();
     await renderLoaded();
 
-    expect(screen.getByText(/2 of 2 selected/)).toBeInTheDocument();
+    expect(screen.getByText(/2 of 2 selected/)).toHaveTextContent('$2,000.00 balance');
 
     await user.click(screen.getByRole('checkbox', { name: /Visa/ }));
     expect(screen.getByText(/1 of 2 selected/)).toBeInTheDocument();
 
     await user.click(screen.getByRole('checkbox', { name: /Loan/ }));
     expect(screen.getByText(/0 of 2 selected/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Recommend' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Order debts' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Analyze' })).toBeDisabled();
-    expect(screen.getByText('Select at least one account to enable these actions.')).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Compare plans' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Select at least one account');
 
     await user.click(screen.getByRole('button', { name: 'Select all' }));
-    expect(screen.getByRole('button', { name: 'Recommend' })).toBeEnabled();
-
-    await user.click(screen.getByRole('button', { name: 'Snowball' }));
-    await user.click(screen.getByRole('button', { name: 'Avalanche' }));
-    expect(screen.getByRole('button', { name: 'Analyze' })).toBeDisabled();
-    expect(screen.getByText('Pick at least one strategy for the analysis.')).toBeInTheDocument();
-
-    await user.click(screen.getByRole('button', { name: 'Hybrid' }));
-    expect(screen.getByRole('button', { name: 'Analyze' })).toBeEnabled();
+    expect(screen.getByText(/2 of 2 selected/)).toBeInTheDocument();
   });
 
-  it('recommends a strategy', async () => {
+  it('compares all five plans and shows the server recommendation', async () => {
     const user = userEvent.setup();
     await renderLoaded();
 
-    await user.click(screen.getByRole('button', { name: 'Recommend' }));
+    setValue(/Start month/, '2026-01');
+    await user.click(screen.getByRole('button', { name: 'Compare plans' }));
 
-    await waitFor(() => expect(screen.getByText('Recommended strategy')).toBeInTheDocument());
-    expect(screen.getByText('AVALANCHE')).toBeInTheDocument();
-    expect(recommend).toHaveBeenCalledWith([visaDebt, loanDebt]);
-  });
-
-  it('shows a recommendation error', async () => {
-    const user = userEvent.setup();
-    recommend.mockRejectedValue(new ApiError(500, 'oracle down'));
-    await renderLoaded();
-
-    await user.click(screen.getByRole('button', { name: 'Recommend' }));
-
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('oracle down'));
-  });
-
-  it('orders debts with the selected strategy', async () => {
-    const user = userEvent.setup();
-    await renderLoaded();
-
-    await user.selectOptions(screen.getByLabelText(/Order by/), 'AVALANCHE');
-    await user.click(screen.getByRole('button', { name: 'Order debts' }));
-
-    await waitFor(() => expect(screen.getByText(/Payoff order/)).toBeInTheDocument());
-    expect(screen.getByText('Smallest balance first')).toBeInTheDocument();
-    expect(order).toHaveBeenCalledWith([visaDebt, loanDebt], {
-      strategyType: 'AVALANCHE',
-      extraPayment: 0,
+    await waitFor(() => expect(compare).toHaveBeenCalledOnce());
+    expect(compare).toHaveBeenCalledWith({
+      tomeIds: ['t1', 't2'],
+      startMonth: '2026-01-01',
+      horizonMonths: 120,
+      extraPayment: 75,
       lumpSumPayment: 0,
+      lumpSumMonth: 1,
+      plans: PLAN_TYPES,
     });
+
+    expect(screen.getByText(/Avalanche recommended/)).toHaveTextContent('Lowest total interest');
+    expect(screen.getByText('recommended')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /recommended/ })).toHaveLength(1);
+    expect(screen.getByRole('heading', { name: 'Avalanche timeline' })).toBeInTheDocument();
+    expect(screen.getByText('AVALANCHE month 1')).toBeInTheDocument();
   });
 
-  it('shows an ordering error', async () => {
-    const user = userEvent.setup();
-    order.mockRejectedValue(new ApiError(500, 'order failed'));
-    await renderLoaded();
-
-    await user.click(screen.getByRole('button', { name: 'Order debts' }));
-
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('order failed'));
-  });
-
-  it('analyzes the selected strategies', async () => {
+  it('switches the timeline to another plan card', async () => {
     const user = userEvent.setup();
     await renderLoaded();
 
-    await user.click(screen.getByRole('button', { name: 'Analyze' }));
+    await user.click(screen.getByRole('button', { name: 'Compare plans' }));
+    await waitFor(() => expect(screen.getByText('recommended')).toBeInTheDocument());
 
-    await waitFor(() => expect(screen.getByText('Strategy comparison')).toBeInTheDocument());
-    expect(screen.getByText('Recommended: AVALANCHE')).toBeInTheDocument();
-    expect(screen.getByText('Highest rate first')).toBeInTheDocument();
-    expect(screen.getByText('best')).toBeInTheDocument();
-    expect(analyze).toHaveBeenCalledWith([visaDebt, loanDebt], ['SNOWBALL', 'AVALANCHE'], {
-      extraPayment: 0,
-      lumpSumPayment: 0,
-    });
+    await user.click(screen.getByRole('button', { name: /Snowball/ }));
+
+    expect(screen.getByRole('heading', { name: 'Snowball timeline' })).toBeInTheDocument();
+    expect(screen.getByText('SNOWBALL month 1')).toBeInTheDocument();
+    expect(screen.queryByText('AVALANCHE month 1')).not.toBeInTheDocument();
   });
 
-  it('hides the recommendation badge when no strategy is recommended', async () => {
+  it('falls back to the first plan when nothing is recommended', async () => {
     const user = userEvent.setup();
-    analyze.mockResolvedValue({ ...analysis, recommendedStrategy: '' });
+    compare.mockResolvedValue({ ...comparison, recommendedPlan: null });
     await renderLoaded();
 
-    await user.click(screen.getByRole('button', { name: 'Analyze' }));
+    await user.click(screen.getByRole('button', { name: 'Compare plans' }));
 
-    await waitFor(() => expect(screen.getByText('Strategy comparison')).toBeInTheDocument());
-    expect(screen.queryByText(/Recommended:/)).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByRole('heading', { name: 'Current timeline' })).toBeInTheDocument(),
+    );
+    expect(screen.queryByText('recommended')).not.toBeInTheDocument();
   });
 
-  it('shows an analysis error', async () => {
+  it('shows a comparison error', async () => {
     const user = userEvent.setup();
-    analyze.mockRejectedValue(new ApiError(500, 'analysis failed'));
+    compare.mockRejectedValue(new ApiError(500, 'ledger failed'));
     await renderLoaded();
 
-    await user.click(screen.getByRole('button', { name: 'Analyze' }));
+    await user.click(screen.getByRole('button', { name: 'Compare plans' }));
 
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('analysis failed'));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('ledger failed'));
   });
 });

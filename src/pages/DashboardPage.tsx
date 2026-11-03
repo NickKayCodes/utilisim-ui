@@ -1,10 +1,10 @@
-import { useCallback, useState } from 'react';
+import { useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useAuth } from '../auth/auth-context';
 import { archiveApi } from '../services/archive';
+import { simulationApi } from '../services/simulation';
 import { tomesApi } from '../services/tomes';
 import { useApiResource } from '../lib/use-api-resource';
-import { readLastRun } from '../lib/last-run';
 import {
   effectiveApr,
   sumBalance,
@@ -12,22 +12,26 @@ import {
   utilization,
   weightedApr,
 } from '../lib/accounts';
-import { money, moneyShort, monthsLabel, percent, shortDate, strategyLabel } from '../lib/format';
+import { money, percent, shortDate, strategyLabel } from '../lib/format';
 import { Alert, Badge, EmptyState, PageHeader, Section, Spinner, StatCard } from '../components/ui';
 
 export function DashboardPage() {
   const { user } = useAuth();
   const loadTomes = useCallback(() => tomesApi.list(), []);
   const loadScenarios = useCallback(() => archiveApi.list(), []);
+  const loadHistory = useCallback(() => simulationApi.history(20), []);
   const tomes = useApiResource(loadTomes);
   const scenarios = useApiResource(loadScenarios);
-  const [lastRun] = useState(readLastRun);
+  const history = useApiResource(loadHistory);
 
   const accounts = tomes.data ?? [];
   const balance = sumBalance(accounts);
   const minimums = sumMinimums(accounts);
   const apr = weightedApr(accounts);
   const used = utilization(accounts);
+
+  const currentPlan = (history.data ?? []).find((plan) => plan.plan === 'CURRENT');
+  const nextMonth = currentPlan?.months[0];
 
   return (
     <div className="stack-lg">
@@ -43,7 +47,10 @@ export function DashboardPage() {
 
       {tomes.error ? (
         <Alert>
-          {tomes.error} <button type="button" className="btn btn-ghost btn-sm" onClick={tomes.reload}>Retry</button>
+          {tomes.error}{' '}
+          <button type="button" className="btn btn-ghost btn-sm" onClick={tomes.reload}>
+            Retry
+          </button>
         </Alert>
       ) : null}
 
@@ -51,7 +58,7 @@ export function DashboardPage() {
         <StatCard
           label="Accounts tracked"
           value={tomes.loading ? '—' : String(accounts.length)}
-          hint={tomes.loading ? 'Loading…' : `${accounts.length ? 'Across all types' : 'Add your first account'}`}
+          hint={tomes.loading ? 'Loading…' : accounts.length ? 'Across all types' : 'Add your first account'}
         />
         <StatCard label="Total balance" value={tomes.loading ? '—' : money(balance)} hint="Sum of current balances" />
         <StatCard label="Monthly minimums" value={tomes.loading ? '—' : money(minimums)} hint="Before any extra payment" />
@@ -65,33 +72,53 @@ export function DashboardPage() {
 
       <div className="grid grid-2">
         <Section
-          title="Last simulation"
-          description="Kept in this browser only — the API does not store runs."
+          title="Next month of your current plan"
+          description="The first month of the latest CURRENT run."
           actions={
             <Link className="btn btn-ghost btn-sm" to="/app/simulate">
               Open simulator
             </Link>
           }
         >
-          {lastRun ? (
+          {history.error ? (
+            <Alert>
+              {history.error}{' '}
+              <button type="button" className="btn btn-ghost btn-sm" onClick={history.reload}>
+                Retry
+              </button>
+            </Alert>
+          ) : history.loading ? (
+            <Spinner label="Loading runs…" />
+          ) : currentPlan && nextMonth ? (
             <div className="stack">
               <div className="grid grid-3">
-                <StatCard label="Months to payoff" value={monthsLabel(lastRun.monthsToPayoff)} />
-                <StatCard label="Interest" value={moneyShort(lastRun.totalInterestPaid)} />
-                <StatCard label="Payoff date" value={shortDate(lastRun.payoffDate)} />
+                <StatCard label="Next month" value={nextMonth.monthLabel} hint={`Run #${currentPlan.runId}`} />
+                <StatCard label="Starting balance" value={money(nextMonth.startingBalance)} />
+                <StatCard label="Monthly interest" value={money(nextMonth.monthlyInterest)} />
+                <StatCard label="Minimum due" value={money(nextMonth.minimumDue)} />
+                <StatCard label="Actual payment" value={money(nextMonth.actualPayment)} />
+                <StatCard
+                  label="Remaining"
+                  value={money(nextMonth.remainingBalance)}
+                  hint={
+                    nextMonth.utilizationPct === null
+                      ? 'No credit limit'
+                      : `Utilization ${percent(nextMonth.utilizationPct)}`
+                  }
+                />
               </div>
               <p className="muted small">
-                Ran against a {moneyShort(lastRun.totalPrincipalPaid)} principal at status{' '}
-                {lastRun.status}.
+                Plan {strategyLabel(currentPlan.plan)} · {currentPlan.status} · started{' '}
+                {shortDate(currentPlan.months[0]?.periodStart)}
               </p>
             </div>
           ) : (
             <EmptyState
-              title="No simulation yet"
-              description="Run one to see the payoff date and interest cost."
+              title="No current plan yet"
+              description="Run a CURRENT plan to see next month's starting balance, payment and utilization."
               action={
                 <Link className="btn btn-primary btn-sm" to="/app/simulate">
-                  Run a simulation
+                  Run a plan
                 </Link>
               }
             />
@@ -168,6 +195,7 @@ export function DashboardPage() {
                   <th className="num">Balance</th>
                   <th className="num">APR</th>
                   <th className="num">Minimum</th>
+                  <th className="num">Current</th>
                 </tr>
               </thead>
               <tbody>
@@ -180,6 +208,9 @@ export function DashboardPage() {
                     <td className="num">{money(account.currentBalance)}</td>
                     <td className="num">{percent(effectiveApr(account))}</td>
                     <td className="num">{money(account.minimumDebtPayment)}</td>
+                    <td className="num">
+                      {money(account.currentPayment ?? account.minimumDebtPayment)}
+                    </td>
                   </tr>
                 ))}
               </tbody>

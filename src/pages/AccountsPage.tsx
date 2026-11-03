@@ -33,6 +33,7 @@ interface AccountForm {
   currentBalance: string;
   apr: string;
   minimumDebtPayment: string;
+  currentPayment: string;
   creditLimit: string;
 }
 
@@ -42,6 +43,7 @@ const EMPTY_FORM: AccountForm = {
   currentBalance: '',
   apr: '',
   minimumDebtPayment: '',
+  currentPayment: '',
   creditLimit: '',
 };
 
@@ -59,6 +61,14 @@ function validateForm(form: AccountForm): string | null {
   const minimum = toNumber(form.minimumDebtPayment);
   if (!Number.isFinite(minimum) || minimum < 0) return 'Minimum payment must be zero or more.';
 
+  if (form.currentPayment.trim()) {
+    const current = toNumber(form.currentPayment);
+    if (!Number.isFinite(current) || current < 0) {
+      return 'Current payment must be zero or more.';
+    }
+    if (current < minimum) return 'Current payment cannot be below the minimum.';
+  }
+
   const limit = toNumber(form.creditLimit);
   if (!Number.isFinite(limit) || limit < 0) return 'Credit limit must be zero or more.';
 
@@ -67,12 +77,14 @@ function validateForm(form: AccountForm): string | null {
 
 function buildPayload(form: AccountForm): TomeRequest {
   const aprText = form.apr.trim();
+  const currentText = form.currentPayment.trim();
   return {
     name: form.name.trim(),
     type: form.type,
     currentBalance: toNumber(form.currentBalance),
     apr: aprText ? toNumber(aprText) : null,
     minimumDebtPayment: toNumber(form.minimumDebtPayment),
+    currentPayment: currentText ? toNumber(currentText) : null,
     creditLimit: toNumber(form.creditLimit),
   };
 }
@@ -216,7 +228,7 @@ export function AccountsPage() {
                 />
               </Field>
 
-              <Field label="APR %" hint="Required today">
+              <Field label="APR %" hint="Optional; uses a 16% estimate when blank">
                 <input
                   className="input"
                   type="number"
@@ -239,6 +251,18 @@ export function AccountsPage() {
                   onChange={(event) => update('minimumDebtPayment', event.target.value)}
                   placeholder="35"
                   required
+                />
+              </Field>
+
+              <Field label="Current payment" hint="What you pay now; defaults to the minimum">
+                <input
+                  className="input"
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={form.currentPayment}
+                  onChange={(event) => update('currentPayment', event.target.value)}
+                  placeholder="35"
                 />
               </Field>
 
@@ -302,6 +326,7 @@ export function AccountsPage() {
                   <th className="num">Balance</th>
                   <th className="num">APR</th>
                   <th className="num">Minimum</th>
+                  <th className="num">Current</th>
                   <th className="num">Utilisation</th>
                   <th />
                 </tr>
@@ -327,6 +352,9 @@ export function AccountsPage() {
                         ) : null}
                       </td>
                       <td className="num">{money(account.minimumDebtPayment)}</td>
+                      <td className="num">
+                        {money(account.currentPayment ?? account.minimumDebtPayment)}
+                      </td>
                       <td className="num">
                         {pct === null ? (
                           <span className="muted">—</span>

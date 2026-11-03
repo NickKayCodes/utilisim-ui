@@ -85,6 +85,22 @@ describe('AccountsPage', () => {
     expect(screen.getByText('Credit utilisation').parentElement).toHaveTextContent('96.7%');
   });
 
+  it('shows the current payment and falls back to the minimum', async () => {
+    listTomes.mockResolvedValue([
+      tome({ currentPayment: 150 }),
+      tome({ id: 't2', name: 'Store card', minimumDebtPayment: 20 }),
+    ]);
+
+    renderAccounts();
+    await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
+
+    expect(screen.getByRole('columnheader', { name: 'Current' })).toBeInTheDocument();
+    expect(screen.getByText('Visa').closest('tr')).toHaveTextContent('$35.00');
+    expect(screen.getByText('Visa').closest('tr')).toHaveTextContent('$150.00');
+    // No current payment supplied, so the minimum is shown.
+    expect(screen.getByText('Store card').closest('tr')).toHaveTextContent('$20.00');
+  });
+
   it('shows an empty state that opens the form', async () => {
     const user = userEvent.setup();
     listTomes.mockResolvedValue([]);
@@ -171,11 +187,50 @@ describe('AccountsPage', () => {
         currentBalance: 1200.5,
         apr: null,
         minimumDebtPayment: 35,
+        currentPayment: null,
         creditLimit: 5000,
       }),
     );
     await waitFor(() => expect(listTomes).toHaveBeenCalledTimes(2));
     expect(screen.queryByRole('heading', { name: 'New account' })).not.toBeInTheDocument();
+  });
+
+  it('sends a current payment when it differs from the minimum', async () => {
+    const user = userEvent.setup();
+    createTome.mockResolvedValue(tome());
+    renderAccounts();
+    await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Add account' }));
+
+    await user.type(screen.getByLabelText(/Account name/), 'New card');
+    fireEvent.change(screen.getByLabelText(/Current balance/), { target: { value: '1200' } });
+    fireEvent.change(screen.getByLabelText(/Minimum payment/), { target: { value: '35' } });
+    fireEvent.change(screen.getByLabelText(/Current payment/), { target: { value: '150' } });
+    fireEvent.change(screen.getByLabelText(/Credit limit/), { target: { value: '5000' } });
+    await user.click(screen.getByRole('button', { name: 'Save account' }));
+
+    await waitFor(() =>
+      expect(createTome).toHaveBeenCalledWith(
+        expect.objectContaining({ currentPayment: 150 }),
+      ),
+    );
+  });
+
+  it('rejects a current payment below the minimum', async () => {
+    const user = userEvent.setup();
+    renderAccounts();
+    await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Add account' }));
+
+    await user.type(screen.getByLabelText(/Account name/), 'New card');
+    fireEvent.change(screen.getByLabelText(/Current balance/), { target: { value: '1200' } });
+    fireEvent.change(screen.getByLabelText(/Minimum payment/), { target: { value: '35' } });
+    fireEvent.change(screen.getByLabelText(/Current payment/), { target: { value: '10' } });
+    fireEvent.change(screen.getByLabelText(/Credit limit/), { target: { value: '5000' } });
+    await user.click(screen.getByRole('button', { name: 'Save account' }));
+
+    expect(screen.getByText('Current payment cannot be below the minimum.')).toBeInTheDocument();
+    expect(createTome).not.toHaveBeenCalled();
   });
 
   it('keeps the form open and shows an API error', async () => {
