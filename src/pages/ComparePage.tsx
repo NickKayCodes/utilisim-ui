@@ -6,13 +6,15 @@ import { simulationApi } from '../services/simulation';
 import { useApiResource } from '../lib/use-api-resource';
 import { errorMessage } from '../lib/api';
 import { sumBalance, totalCurrentPayments } from '../lib/accounts';
-import { money, monthsLabel, percent, strategyLabel, toNumber } from '../lib/format';
-import type { ComparisonResponse, PlanType } from '../types/api';
+import { money, monthsLabel, numOr, percent, strategyLabel, toNumber } from '../lib/format';
+import type { ComparisonResponse, PlanType, StrategyBudget } from '../types/api';
 import { PLAN_TYPES } from '../types/api';
 import { Alert, Badge, EmptyState, Field, PageHeader, Section, Spinner } from '../components/ui';
 import { PlanTimelineView } from '../components/PlanTimelineView';
+import { StrategyBudgetSelector, BudgetHint } from '../components/StrategyBudgetSelector';
 
 interface CompareForm {
+  budget: StrategyBudget;
   startMonth: string;
   horizonMonths: string;
   extraPayment: string;
@@ -33,9 +35,12 @@ function validate(form: CompareForm, selectedCount: number): string | null {
   if (!Number.isFinite(horizon) || horizon < 1 || horizon > 600) {
     return 'Horizon must be between 1 and 600 months.';
   }
-  const extra = toNumber(form.extraPayment || '0');
-  if (!Number.isFinite(extra) || extra < 0) {
-    return 'Extra payment must be zero or more.';
+  // Under CURRENT_PAYMENTS the extra input is disabled and ignored.
+  if (form.budget === 'REQUIRED_MINIMUM') {
+    const extra = toNumber(form.extraPayment || '0');
+    if (!Number.isFinite(extra) || extra < 0) {
+      return 'Extra payment must be zero or more.';
+    }
   }
   const lump = toNumber(form.lumpSumPayment || '0');
   if (!Number.isFinite(lump) || lump < 0) {
@@ -54,6 +59,7 @@ export function ComparePage() {
 
   const [deselected, setDeselected] = useState<string[]>([]);
   const [form, setForm] = useState<CompareForm>({
+    budget: 'REQUIRED_MINIMUM',
     startMonth: currentMonth(),
     horizonMonths: '120',
     extraPayment: '75',
@@ -97,10 +103,13 @@ export function ComparePage() {
         tomeIds: selected.map((account) => account.id),
         startMonth: `${form.startMonth}-01`,
         horizonMonths: Math.round(toNumber(form.horizonMonths)),
-        extraPayment: toNumber(form.extraPayment || '0'),
+        extraPayment:
+          form.budget === 'CURRENT_PAYMENTS' ? 0 : toNumber(form.extraPayment || '0'),
         lumpSumPayment: toNumber(form.lumpSumPayment || '0'),
         lumpSumMonth: Math.round(toNumber(form.lumpSumMonth)),
         plans: PLAN_TYPES,
+        // One budget for the three strategy plans; CURRENT and MINIMUM ignore it.
+        strategyBudget: form.budget,
       });
       setComparison(response);
       setSelectedPlan(response.recommendedPlan ?? response.plans[0]?.plan ?? null);
@@ -199,6 +208,13 @@ export function ComparePage() {
           >
             <form className="stack" onSubmit={handleCompare} noValidate>
               <div className="grid grid-3">
+                <StrategyBudgetSelector
+                  value={form.budget}
+                  selected={selected}
+                  extraPayment={numOr(form.extraPayment, 0)}
+                  allocatedBy="the strategy plans"
+                  onChange={(budget) => update('budget', budget)}
+                />
                 <Field label="Start month">
                   <input
                     className="input"
@@ -220,7 +236,14 @@ export function ComparePage() {
                     required
                   />
                 </Field>
-                <Field label="Extra per month">
+                <Field
+                  label="Extra per month"
+                  hint={
+                    form.budget === 'CURRENT_PAYMENTS'
+                      ? 'Replaced by My Current Payments'
+                      : 'Added to the strategy plans'
+                  }
+                >
                   <input
                     className="input"
                     type="number"
@@ -228,6 +251,7 @@ export function ComparePage() {
                     step="0.01"
                     value={form.extraPayment}
                     onChange={(event) => update('extraPayment', event.target.value)}
+                    disabled={form.budget === 'CURRENT_PAYMENTS'}
                   />
                 </Field>
                 <Field label="One-time lump sum">
@@ -299,6 +323,7 @@ export function ComparePage() {
                         <span className="stat-hint">
                           Interest {money(plan.totalInterest)} · final {money(plan.finalBalance)}
                         </span>
+                        <BudgetHint timeline={plan} extraPayment={numOr(form.extraPayment, 0)} />
                         <span className="stat-hint">
                           {plan.peakUtilizationPct === null
                             ? 'No credit limit'

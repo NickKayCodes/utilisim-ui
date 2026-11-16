@@ -50,6 +50,10 @@ const timeline: PlanTimeline = {
   totalPaid: 1015.5,
   finalBalance: 0,
   peakUtilizationPct: 40,
+  strategyBudget: 'REQUIRED_MINIMUM',
+  totalMinimum: 35,
+  totalCurrent: 100,
+  surplus: 65,
   months: [
     {
       monthIndex: 1,
@@ -171,6 +175,7 @@ describe('SimulatePage', () => {
     await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
 
     expect(screen.getByLabelText(/^Plan/)).toHaveValue('CURRENT');
+    expect(screen.queryByLabelText(/Budget/)).not.toBeInTheDocument();
     expect(screen.getByLabelText(/Extra per month/)).toBeDisabled();
     expect(screen.getByLabelText(/One-time lump sum/)).toBeDisabled();
     expect(screen.getByLabelText(/Lump-sum month/)).toBeDisabled();
@@ -185,9 +190,21 @@ describe('SimulatePage', () => {
 
     await user.selectOptions(screen.getByLabelText(/^Plan/), 'SNOWBALL');
 
+    expect(screen.getByLabelText(/Budget/)).toHaveValue('REQUIRED_MINIMUM');
     expect(screen.getByLabelText(/Extra per month/)).toBeEnabled();
     expect(screen.getByLabelText(/One-time lump sum/)).toBeEnabled();
     expect(screen.getByLabelText(/Lump-sum month/)).toBeEnabled();
+  });
+
+  it('hides the budget selector for MINIMUM', async () => {
+    const user = userEvent.setup();
+    renderSimulate();
+    await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
+
+    await user.selectOptions(screen.getByLabelText(/^Plan/), 'MINIMUM');
+
+    expect(screen.queryByLabelText(/Budget/)).not.toBeInTheDocument();
+    expect(screen.getByLabelText(/Extra per month/)).toBeDisabled();
   });
 
   it('toggles account selection', async () => {
@@ -257,19 +274,96 @@ describe('SimulatePage', () => {
       extraPayment: 75,
       lumpSumPayment: 0,
       lumpSumMonth: 1,
+      strategyBudget: 'REQUIRED_MINIMUM',
     });
 
     expect(screen.getByText('Months to payoff').parentElement).toHaveTextContent('2 months');
     expect(screen.getByText('Total interest').parentElement).toHaveTextContent('$15.50');
     expect(screen.getByText('Total paid').parentElement).toHaveTextContent('$1,015.50');
     expect(screen.getByText('Jan 2026')).toBeInTheDocument();
+    expect(
+      screen.getByText(/Avalanche · Required Minimum Payments \+ \$75\.00 Extra/),
+    ).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Clear' }));
     expect(screen.queryByText('Jan 2026')).not.toBeInTheDocument();
   });
 
-  it('shows a run error', async () => {
+  it('disables the extra payment and sends the surplus under My Current Payments', async () => {
     const user = userEvent.setup();
+    listTomes.mockResolvedValue([tome({ currentPayment: 100 })]);
+    renderSimulate();
+    await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
+
+    await user.selectOptions(screen.getByLabelText(/^Plan/), 'AVALANCHE');
+    setValue(/Extra per month/, '75');
+    await user.selectOptions(screen.getByLabelText(/Budget/), 'CURRENT_PAYMENTS');
+
+    expect(screen.getByLabelText(/Extra per month/)).toBeDisabled();
+    expect(screen.getByLabelText(/Extra per month/)).toHaveValue(75);
+
+    await user.click(screen.getByRole('button', { name: 'Run plan' }));
+
+    await waitFor(() => expect(runPlan).toHaveBeenCalledOnce());
+    expect(runPlan).toHaveBeenCalledWith(
+      expect.objectContaining({ extraPayment: 0, strategyBudget: 'CURRENT_PAYMENTS' }),
+    );
+  });
+
+  it('says there is no surplus when current payments equal the minimums', async () => {
+    const user = userEvent.setup();
+    renderSimulate();
+    await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
+
+    await user.selectOptions(screen.getByLabelText(/^Plan/), 'SNOWBALL');
+    await user.selectOptions(screen.getByLabelText(/Budget/), 'CURRENT_PAYMENTS');
+
+    expect(
+      screen.getByText(
+        'No amount above minimums. This is the same as Required Minimum Payments.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('names the resolved budget in the results header', async () => {
+    const user = userEvent.setup();
+    runPlan.mockResolvedValue({
+      ...timeline,
+      strategyBudget: 'CURRENT_PAYMENTS',
+      totalMinimum: 1791.64,
+      totalCurrent: 2092.64,
+      surplus: 301,
+    });
+    listTomes.mockResolvedValue([tome({ currentPayment: 100 })]);
+    renderSimulate();
+    await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
+
+    await user.selectOptions(screen.getByLabelText(/^Plan/), 'AVALANCHE');
+    await user.selectOptions(screen.getByLabelText(/Budget/), 'CURRENT_PAYMENTS');
+    await user.click(screen.getByRole('button', { name: 'Run plan' }));
+
+    expect(
+      await screen.findByText(/Avalanche · My Current Payments \(\$2,092\.64\)/),
+    ).toBeInTheDocument();
+  });
+
+  it('keeps the chosen budget when the strategy changes', async () => {
+    const user = userEvent.setup();
+    listTomes.mockResolvedValue([tome({ currentPayment: 100 })]);
+    renderSimulate();
+    await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
+
+    await user.selectOptions(screen.getByLabelText(/^Plan/), 'SNOWBALL');
+    await user.selectOptions(screen.getByLabelText(/Budget/), 'CURRENT_PAYMENTS');
+    expect(screen.getByText(/allocated by the Snowball strategy/)).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText(/^Plan/), 'HYBRID');
+
+    expect(screen.getByLabelText(/Budget/)).toHaveValue('CURRENT_PAYMENTS');
+    expect(screen.getByText(/allocated by the Hybrid strategy/)).toBeInTheDocument();
+  });
+
+  it('shows a run error', async () => {    const user = userEvent.setup();
     runPlan.mockRejectedValue(new ApiError(500, 'simulation failed'));
     renderSimulate();
     await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());

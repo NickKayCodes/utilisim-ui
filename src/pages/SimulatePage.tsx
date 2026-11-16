@@ -13,13 +13,22 @@ import {
   weightedApr,
 } from '../lib/accounts';
 import { money, percent, strategyLabel, toNumber } from '../lib/format';
-import type { PlanRunRequest, PlanTimeline, PlanType, Scenario, Tome } from '../types/api';
+import type {
+  PlanRunRequest,
+  PlanTimeline,
+  PlanType,
+  Scenario,
+  StrategyBudget,
+  Tome,
+} from '../types/api';
 import { PLAN_TYPES } from '../types/api';
 import { Alert, EmptyState, Field, PageHeader, Section, Spinner } from '../components/ui';
 import { PlanTimelineView } from '../components/PlanTimelineView';
+import { StrategyBudgetSelector, BudgetSummary } from '../components/StrategyBudgetSelector';
 
 interface SimForm {
   plan: PlanType;
+  budget: StrategyBudget;
   startMonth: string;
   horizonMonths: string;
   extraPayment: string;
@@ -48,6 +57,7 @@ function isStrategyPlan(plan: PlanType): boolean {
 function initialForm(preset?: Scenario): SimForm {
   return {
     plan: preset ? (scenarioPlan(preset.strategy) ?? 'CURRENT') : 'CURRENT',
+    budget: 'REQUIRED_MINIMUM',
     startMonth: currentMonth(),
     horizonMonths: '120',
     extraPayment: preset ? String(preset.extraPayment ?? 0) : '0',
@@ -66,9 +76,12 @@ function validate(form: SimForm, selectedCount: number): string | null {
   }
 
   if (isStrategyPlan(form.plan)) {
-    const extra = toNumber(form.extraPayment || '0');
-    if (!Number.isFinite(extra) || extra < 0) {
-      return 'Extra payment must be zero or more.';
+    // Under CURRENT_PAYMENTS the extra input is disabled and ignored.
+    if (form.budget === 'REQUIRED_MINIMUM') {
+      const extra = toNumber(form.extraPayment || '0');
+      if (!Number.isFinite(extra) || extra < 0) {
+        return 'Extra payment must be zero or more.';
+      }
     }
     const lump = toNumber(form.lumpSumPayment || '0');
     if (!Number.isFinite(lump) || lump < 0) {
@@ -132,14 +145,17 @@ export function SimulatePage() {
     setSaveNotice(null);
     setSaveError(null);
     try {
+      const spendsSurplus = strategy && form.budget === 'CURRENT_PAYMENTS';
       const request: PlanRunRequest = {
         tomeIds: selected.map((account) => account.id),
         plan: form.plan,
         startMonth: `${form.startMonth}-01`,
         horizonMonths: Math.round(toNumber(form.horizonMonths)),
-        extraPayment: strategy ? toNumber(form.extraPayment || '0') : 0,
+        extraPayment: strategy && !spendsSurplus ? toNumber(form.extraPayment || '0') : 0,
         lumpSumPayment: strategy ? toNumber(form.lumpSumPayment || '0') : 0,
         lumpSumMonth: strategy ? Math.round(toNumber(form.lumpSumMonth)) : 1,
+        // The budget is a strategy-only input; CURRENT and MINIMUM omit it.
+        ...(strategy ? { strategyBudget: form.budget } : {}),
       };
       setTimeline(await simulationApi.runPlan(request));
     } catch (error) {
@@ -284,6 +300,16 @@ export function SimulatePage() {
                   </select>
                 </Field>
 
+                {strategy ? (
+                  <StrategyBudgetSelector
+                    value={form.budget}
+                    selected={selected}
+                    extraPayment={toNumber(form.extraPayment || '0') || 0}
+                    allocatedBy={`the ${strategyLabel(form.plan)} strategy`}
+                    onChange={(budget) => update('budget', budget)}
+                  />
+                ) : null}
+
                 <Field label="Start month">
                   <input
                     className="input"
@@ -309,7 +335,13 @@ export function SimulatePage() {
 
                 <Field
                   label="Extra per month"
-                  hint={strategy ? 'Added to the minimums' : 'Ignored by this plan'}
+                  hint={
+                    !strategy
+                      ? 'Ignored by this plan'
+                      : form.budget === 'CURRENT_PAYMENTS'
+                        ? 'Replaced by My Current Payments'
+                        : 'Added to the minimums'
+                  }
                 >
                   <input
                     className="input"
@@ -318,7 +350,7 @@ export function SimulatePage() {
                     step="0.01"
                     value={form.extraPayment}
                     onChange={(event) => update('extraPayment', event.target.value)}
-                    disabled={!strategy}
+                    disabled={!strategy || form.budget === 'CURRENT_PAYMENTS'}
                   />
                 </Field>
 
@@ -379,6 +411,10 @@ export function SimulatePage() {
               }
             >
               <div className="stack">
+                <BudgetSummary
+                  timeline={timeline}
+                  extraPayment={toNumber(form.extraPayment || '0') || 0}
+                />
                 <PlanTimelineView timeline={timeline} />
 
                 <div className="save-row">

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -49,6 +49,10 @@ function plan(
     totalPaid: 1012,
     finalBalance: 0,
     peakUtilizationPct: 40,
+    strategyBudget: 'REQUIRED_MINIMUM',
+    totalMinimum: 55,
+    totalCurrent: 120,
+    surplus: 65,
     months: [
       {
         monthIndex: 1,
@@ -191,6 +195,7 @@ describe('ComparePage', () => {
       lumpSumPayment: 0,
       lumpSumMonth: 1,
       plans: PLAN_TYPES,
+      strategyBudget: 'REQUIRED_MINIMUM',
     });
 
     expect(screen.getByText(/Avalanche recommended/)).toHaveTextContent('Lowest total interest');
@@ -198,6 +203,53 @@ describe('ComparePage', () => {
     expect(screen.getAllByRole('button', { name: /recommended/ })).toHaveLength(1);
     expect(screen.getByRole('heading', { name: 'Avalanche timeline' })).toBeInTheDocument();
     expect(screen.getByText('AVALANCHE month 1')).toBeInTheDocument();
+  });
+
+  it('labels the three strategy cards with the budget and leaves the baselines plain', async () => {
+    const user = userEvent.setup();
+    await renderLoaded();
+
+    await user.click(screen.getByRole('button', { name: 'Compare plans' }));
+    await waitFor(() => expect(screen.getByText('recommended')).toBeInTheDocument());
+
+    expect(screen.getAllByText('Required Minimum Payments + $75.00 Extra')).toHaveLength(3);
+    expect(
+      within(screen.getByRole('button', { name: /^Current/ })).queryByText(
+        /Required Minimum Payments/,
+      ),
+    ).not.toBeInTheDocument();
+    expect(
+      within(screen.getByRole('button', { name: /^Minimum/ })).queryByText(
+        /Required Minimum Payments/,
+      ),
+    ).not.toBeInTheDocument();
+  });
+
+  it('compares the strategy plans on current payments and ignores the extra input', async () => {
+    const user = userEvent.setup();
+    compare.mockResolvedValue({
+      ...comparison,
+      plans: PLAN_TYPES.map((planType) =>
+        plan(planType, {
+          strategyBudget: 'CURRENT_PAYMENTS',
+          totalMinimum: 1791.64,
+          totalCurrent: 2092.64,
+          surplus: 301,
+        }),
+      ),
+    });
+    await renderLoaded();
+
+    await user.selectOptions(screen.getByLabelText(/Budget/), 'CURRENT_PAYMENTS');
+    expect(screen.getByLabelText(/Extra per month/)).toBeDisabled();
+
+    await user.click(screen.getByRole('button', { name: 'Compare plans' }));
+
+    await waitFor(() => expect(compare).toHaveBeenCalledOnce());
+    expect(compare).toHaveBeenCalledWith(
+      expect.objectContaining({ extraPayment: 0, strategyBudget: 'CURRENT_PAYMENTS' }),
+    );
+    expect(await screen.findAllByText('My Current Payments ($2,092.64)')).toHaveLength(3);
   });
 
   it('switches the timeline to another plan card', async () => {

@@ -199,6 +199,14 @@ export const PLAN_TYPES: PlanType[] = [
 
 export type TerminationReason = 'NONE' | 'PAID_OFF' | 'HORIZON_REACHED' | 'STAGNANT';
 
+/**
+ * What a strategy plan spends each month (FEAT-006). `REQUIRED_MINIMUM` is the
+ * default: minimums plus the extra-payment input. `CURRENT_PAYMENTS` spends what
+ * the user already pays, i.e. minimums plus the surplus above them.
+ */
+export type StrategyBudget = 'REQUIRED_MINIMUM' | 'CURRENT_PAYMENTS';
+
+
 export interface DebtMonthLedger {
   tomeId: string;
   accountName: string;
@@ -243,6 +251,17 @@ export interface PlanTimeline {
   totalPaid: number;
   finalBalance: number;
   peakUtilizationPct: number | null;
+  /**
+   * Always sent by the API; optional because a hand-built timeline may omit it.
+   * Always `REQUIRED_MINIMUM` for CURRENT and MINIMUM: the budget is strategy-only.
+   */
+  strategyBudget?: StrategyBudget;
+  /** Σ minimum over the account selection. */
+  totalMinimum?: number;
+  /** Σ (currentPayment ?? minimum); the resolved "My Current Payments". */
+  totalCurrent?: number;
+  /** Σ max(0, currentPayment - minimum) — what CURRENT_PAYMENTS spends. */
+  surplus?: number;
   months: MonthLedger[];
 }
 
@@ -264,6 +283,8 @@ export interface ComparisonRequest {
   startMonth?: string;
   horizonMonths?: number;
   plans?: PlanType[];
+  /** Applies to the three strategy plans only; absent means `REQUIRED_MINIMUM`. */
+  strategyBudget?: StrategyBudget;
 }
 
 export interface PlanRunRequest {
@@ -274,6 +295,8 @@ export interface PlanRunRequest {
   lumpSumMonth?: number;
   startMonth?: string;
   horizonMonths?: number;
+  /** Applies to the three strategy plans only; absent means `REQUIRED_MINIMUM`. */
+  strategyBudget?: StrategyBudget;
 }
 
 /* ---------------------------------------------------------------- errors */
