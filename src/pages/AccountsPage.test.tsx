@@ -73,6 +73,11 @@ describe('AccountsPage', () => {
     // The second row has no credit limit, so its utilisation cell shows a dash.
     expect(screen.getAllByText('—').length).toBeGreaterThan(0);
     expect(screen.getByText(/PUT \/api\/tomes/)).toBeInTheDocument();
+    // BUG-007: the login-scoped subtext is gone.
+    expect(
+      screen.getByText('Deleting an account removes it from future simulations.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Scoped to your login/)).not.toBeInTheDocument();
   });
 
   it('marks high utilisation', async () => {
@@ -193,6 +198,84 @@ describe('AccountsPage', () => {
     );
     await waitFor(() => expect(listTomes).toHaveBeenCalledTimes(2));
     expect(screen.queryByRole('heading', { name: 'New account' })).not.toBeInTheDocument();
+  });
+
+  it('shows the credit limit only for revolving types and OTHER', async () => {
+    const user = userEvent.setup();
+    renderAccounts();
+    await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Add account' }));
+
+    // CREDIT_CARD is the default.
+    expect(screen.getByLabelText(/Credit limit/)).toBeInTheDocument();
+
+    for (const type of ['STUDENT_LOAN', 'AUTO_LOAN', 'MORTGAGE', 'PERSONAL_LOAN']) {
+      await user.selectOptions(screen.getByLabelText(/Type/), type);
+      expect(screen.queryByLabelText(/Credit limit/)).not.toBeInTheDocument();
+    }
+
+    await user.selectOptions(screen.getByLabelText(/Type/), 'LINE_OF_CREDIT');
+    expect(screen.getByLabelText(/Credit limit/)).toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText(/Type/), 'OTHER');
+    expect(screen.getByLabelText(/Credit limit/)).toBeInTheDocument();
+  });
+
+  it('clears a stale credit limit when an installment type is selected', async () => {
+    const user = userEvent.setup();
+    renderAccounts();
+    await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Add account' }));
+
+    fireEvent.change(screen.getByLabelText(/Credit limit/), { target: { value: '5000' } });
+    await user.selectOptions(screen.getByLabelText(/Type/), 'AUTO_LOAN');
+
+    await user.selectOptions(screen.getByLabelText(/Type/), 'CREDIT_CARD');
+    expect(screen.getByLabelText(/Credit limit/)).toHaveValue(null);
+  });
+
+  it('sends creditLimit 0 for an installment loan that has no limit field', async () => {
+    const user = userEvent.setup();
+    createTome.mockResolvedValue(tome());
+    renderAccounts();
+    await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Add account' }));
+
+    await user.type(screen.getByLabelText(/Account name/), 'Student loan');
+    await user.selectOptions(screen.getByLabelText(/Type/), 'STUDENT_LOAN');
+    fireEvent.change(screen.getByLabelText(/Current balance/), { target: { value: '15000' } });
+    fireEvent.change(screen.getByLabelText(/Minimum payment/), { target: { value: '120' } });
+    await user.click(screen.getByRole('button', { name: 'Save account' }));
+
+    await waitFor(() =>
+      expect(createTome).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: 'Student loan',
+          type: 'STUDENT_LOAN',
+          creditLimit: 0,
+        }),
+      ),
+    );
+  });
+
+  it('lets OTHER omit the credit limit and stores 0', async () => {
+    const user = userEvent.setup();
+    createTome.mockResolvedValue(tome());
+    renderAccounts();
+    await waitFor(() => expect(screen.getByText('Visa')).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: 'Add account' }));
+
+    await user.type(screen.getByLabelText(/Account name/), 'Side gig');
+    await user.selectOptions(screen.getByLabelText(/Type/), 'OTHER');
+    fireEvent.change(screen.getByLabelText(/Current balance/), { target: { value: '800' } });
+    fireEvent.change(screen.getByLabelText(/Minimum payment/), { target: { value: '25' } });
+    await user.click(screen.getByRole('button', { name: 'Save account' }));
+
+    await waitFor(() =>
+      expect(createTome).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'OTHER', creditLimit: 0 }),
+      ),
+    );
   });
 
   it('sends a current payment when it differs from the minimum', async () => {

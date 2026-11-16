@@ -65,7 +65,7 @@ export function PlanTimelineView({ timeline }: { timeline: PlanTimeline }) {
                 <th className="num">Interest</th>
                 <th className="num">Min due</th>
                 <th className="num">Actual</th>
-                <th className="num">Extra</th>
+                <th className="num">Above min</th>
                 <th className="num">Lump sum</th>
                 <th className="num">Remaining</th>
                 <th className="num">Utilization</th>

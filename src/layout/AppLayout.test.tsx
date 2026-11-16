@@ -32,6 +32,8 @@ describe('AppLayout', () => {
     expect(screen.getByRole('link', { name: /Compare/ })).toBeInTheDocument();
     expect(screen.getByText('user@example.com')).toBeInTheDocument();
     expect(screen.getByText('U')).toBeInTheDocument();
+    expect(screen.getByText(/Plans and comparisons are saved by the API/)).toBeInTheDocument();
+    expect(screen.queryByText(/not stored by the API/)).not.toBeInTheDocument();
     expect(window.scrollTo).toHaveBeenCalledWith(0, 0);
   });
 

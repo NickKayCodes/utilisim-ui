@@ -177,6 +177,8 @@ describe('ComparePage', () => {
     const user = userEvent.setup();
     await renderLoaded();
 
+    expect(screen.getByText(/CURRENT pays your current payment/)).toBeInTheDocument();
+
     setValue(/Start month/, '2026-01');
     await user.click(screen.getByRole('button', { name: 'Compare plans' }));
 

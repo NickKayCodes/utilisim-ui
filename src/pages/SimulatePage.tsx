@@ -358,6 +358,10 @@ export function SimulatePage() {
                 </button>
               </div>
             </form>
+            <p className="muted small">
+              CURRENT pays your current payment; the "Above min" column is not the
+              extra-payment input.
+            </p>
           </Section>
 
           {timeline ? (

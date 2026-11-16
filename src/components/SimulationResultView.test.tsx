@@ -17,6 +17,7 @@ function makeResult(rows: number): SimulationResult {
     monthsToPayoff: rows,
     payoffDate: '2026-12-01T00:00:00Z',
     savingsComparedToBaseline: 10,
+    remainingBalance: 0,
     schedule: Array.from({ length: rows }, (_, index) => ({
       monthIndex: index + 1,
       date: '2026-01-01T00:00:00Z',
@@ -41,6 +42,25 @@ describe('SimulationResultView', () => {
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
     // Header row plus five schedule rows.
     expect(screen.getAllByRole('row')).toHaveLength(6);
+  });
+
+  it('shows the remaining balance instead of a payoff date when the plan fails', () => {
+    const failed: SimulationResult = {
+      ...makeResult(3),
+      status: 'FAILED',
+      monthsToPayoff: 0,
+      payoffDate: null,
+      remainingBalance: 640.5,
+    };
+
+    render(<SimulationResultView result={failed} />);
+
+    expect(screen.getByText(/does not pay the debt off/)).toBeInTheDocument();
+    expect(screen.getByText('Not repaid')).toBeInTheDocument();
+    expect(screen.getByText('Remaining balance')).toBeInTheDocument();
+    expect(screen.getAllByText('$640.50').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Payoff date')).not.toBeInTheDocument();
+    expect(screen.getByText(/status FAILED/)).toBeInTheDocument();
   });
 
   it('collapses a long schedule to twelve rows and expands it again', async () => {

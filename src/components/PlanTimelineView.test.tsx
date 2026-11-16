@@ -85,7 +85,7 @@ describe('PlanTimelineView', () => {
       'Interest',
       'Min due',
       'Actual',
-      'Extra',
+      'Above min',
       'Lump sum',
       'Remaining',
       'Utilization',
@@ -94,6 +94,9 @@ describe('PlanTimelineView', () => {
     ]) {
       expect(screen.getByRole('columnheader', { name: header })).toBeInTheDocument();
     }
+
+    // BUG-006: the old "Extra" name implied the extra-payment input.
+    expect(screen.queryByRole('columnheader', { name: 'Extra' })).not.toBeInTheDocument();
   });
 
   it('highlights the first month and warns above the utilization threshold', () => {

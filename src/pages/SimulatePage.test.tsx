@@ -175,6 +175,7 @@ describe('SimulatePage', () => {
     expect(screen.getByLabelText(/One-time lump sum/)).toBeDisabled();
     expect(screen.getByLabelText(/Lump-sum month/)).toBeDisabled();
     expect(screen.getByText(/1 of 1 selected/)).toHaveTextContent('$1,200.00');
+    expect(screen.getByText(/CURRENT pays your current payment/)).toBeInTheDocument();
   });
 
   it('enables budget controls for strategy plans', async () => {

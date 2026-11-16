@@ -27,6 +27,21 @@ const ACCOUNT_TYPES = [
   'OTHER',
 ];
 
+/**
+ * A credit limit only means something for revolving credit (BUG-004). Installment
+ * loans hide the field; `OTHER` keeps it as an optional extra.
+ */
+const CREDIT_LIMIT_TYPES = ['CREDIT_CARD', 'LINE_OF_CREDIT', 'OTHER'];
+
+function showsCreditLimit(type: string): boolean {
+  return CREDIT_LIMIT_TYPES.includes(type);
+}
+
+/** `OTHER` may omit the limit; the revolving types still require it. */
+function requiresCreditLimit(type: string): boolean {
+  return type === 'CREDIT_CARD' || type === 'LINE_OF_CREDIT';
+}
+
 interface AccountForm {
   name: string;
   type: string;
@@ -69,8 +84,13 @@ function validateForm(form: AccountForm): string | null {
     if (current < minimum) return 'Current payment cannot be below the minimum.';
   }
 
-  const limit = toNumber(form.creditLimit);
-  if (!Number.isFinite(limit) || limit < 0) return 'Credit limit must be zero or more.';
+  if (showsCreditLimit(form.type)) {
+    const blank = !form.creditLimit.trim();
+    if (!blank || requiresCreditLimit(form.type)) {
+      const limit = toNumber(form.creditLimit);
+      if (!Number.isFinite(limit) || limit < 0) return 'Credit limit must be zero or more.';
+    }
+  }
 
   return null;
 }
@@ -78,6 +98,7 @@ function validateForm(form: AccountForm): string | null {
 function buildPayload(form: AccountForm): TomeRequest {
   const aprText = form.apr.trim();
   const currentText = form.currentPayment.trim();
+  const limitText = showsCreditLimit(form.type) ? form.creditLimit.trim() : '';
   return {
     name: form.name.trim(),
     type: form.type,
@@ -85,7 +106,8 @@ function buildPayload(form: AccountForm): TomeRequest {
     apr: aprText ? toNumber(aprText) : null,
     minimumDebtPayment: toNumber(form.minimumDebtPayment),
     currentPayment: currentText ? toNumber(currentText) : null,
-    creditLimit: toNumber(form.creditLimit),
+    // Hidden types send 0, and a blank optional limit also stores 0.
+    creditLimit: limitText ? toNumber(limitText) : 0,
   };
 }
 
@@ -205,7 +227,15 @@ export function AccountsPage() {
                 <select
                   className="input"
                   value={form.type}
-                  onChange={(event) => update('type', event.target.value)}
+                  onChange={(event) => {
+                    const type = event.target.value;
+                    // Switching to a type without a limit clears any stale value.
+                    setForm((current) => ({
+                      ...current,
+                      type,
+                      creditLimit: showsCreditLimit(type) ? current.creditLimit : '',
+                    }));
+                  }}
                 >
                   {ACCOUNT_TYPES.map((type) => (
                     <option key={type} value={type}>
@@ -266,17 +296,22 @@ export function AccountsPage() {
                 />
               </Field>
 
-              <Field label="Credit limit" hint="Used for utilisation only">
-                <input
-                  className="input"
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={form.creditLimit}
-                  onChange={(event) => update('creditLimit', event.target.value)}
-                  placeholder="5000"
-                />
-              </Field>
+              {showsCreditLimit(form.type) ? (
+                <Field
+                  label="Credit limit"
+                  hint={requiresCreditLimit(form.type) ? 'Used for utilisation only' : 'Optional; used for utilisation only'}
+                >
+                  <input
+                    className="input"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={form.creditLimit}
+                    onChange={(event) => update('creditLimit', event.target.value)}
+                    placeholder="5000"
+                  />
+                </Field>
+              ) : null}
             </div>
 
             {formError ? <Alert>{formError}</Alert> : null}
@@ -303,7 +338,7 @@ export function AccountsPage() {
 
       <Section
         title="Tracked accounts"
-        description="Scoped to your login. Deleting an account removes it from future simulations."
+        description="Deleting an account removes it from future simulations."
       >
         {tomes.loading ? (
           <Spinner label="Loading accounts…" />

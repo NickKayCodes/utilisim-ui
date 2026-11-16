@@ -68,6 +68,16 @@ describe('ScenariosPage', () => {
     await waitFor(() => expect(screen.getByText('No scenarios yet')).toBeInTheDocument());
   });
 
+  it('describes persisted runs and drops the legacy /assemble copy', async () => {
+    renderScenarios();
+
+    await waitFor(() => expect(screen.getByText('Aggressive payoff')).toBeInTheDocument());
+
+    expect(screen.getByText(/Runs are persisted by the API/)).toBeInTheDocument();
+    expect(screen.getByText(/the horizon is re-entered/)).toBeInTheDocument();
+    expect(screen.queryByText(/assemble\/results/)).not.toBeInTheDocument();
+  });
+
   it('validates the form', async () => {
     const user = userEvent.setup();
     renderScenarios();

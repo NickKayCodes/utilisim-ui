@@ -148,8 +148,9 @@ Pages render `errorMessage(error)` verbatim in an `Alert`. The UI does not rewri
 | `404` | often **empty** for scenario ids | Show a generic failure; never assume JSON |
 | `500` | `{ "error": "Internal Server Error", "message": "Unexpected error" }` | Show the message; never a stack trace |
 
-**Tome delete is special.** `DELETE /api/tomes/{id}` returns `500` for a missing or foreign id,
-not `404`/`403`. `AccountsPage` surfaces the message and leaves the row in place.
+**Tome delete is a `404`.** `DELETE /api/tomes/{id}` returns `404`
+`{"error":"Not Found","message":"Account not found"}` for a missing id, a foreign id, or a row with
+no owner. `AccountsPage` surfaces the message and leaves the row in place.
 
 **A blank APR is now accepted.** `POST /api/tomes` with `apr: null` stores the documented 16.0000
 percent estimate. `AccountsPage` labels the field optional; the account is created and
@@ -368,8 +369,8 @@ Enter a numeric APR. When `apr` is supplied, `estimatedApr` mirrors it.
 
 ### `DELETE /api/tomes/{id}`
 
-Authenticated. `204` on success. The UI confirms with `window.confirm`, then reloads. Missing or
-foreign ids return `500`; the row stays visible.
+Authenticated. `204` on success. The UI confirms with `window.confirm`, then reloads. A missing,
+foreign or unowned id returns `404` `{"message":"Account not found"}`; the row stays visible.
 
 ### `GET /api/archive/scenarios`
 

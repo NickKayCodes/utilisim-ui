@@ -108,7 +108,7 @@ export function AppLayout() {
             ☰ Menu
           </button>
           <span className="topbar-note">
-            Simulation runs are not stored by the API — save inputs as a scenario to keep them.
+            Plans and comparisons are saved by the API. Scenarios store reusable plan inputs.
           </span>
         </header>
         <main className="content">

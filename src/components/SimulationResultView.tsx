@@ -8,18 +8,38 @@ const PREVIEW_ROWS = 12;
 export function SimulationResultView({ result }: { result: SimulationResult }) {
   const [expanded, setExpanded] = useState(false);
   const rows = expanded ? result.schedule : result.schedule.slice(0, PREVIEW_ROWS);
+  const repaid = result.status === 'COMPLETED';
 
   return (
     <div className="stack">
+      {repaid ? null : (
+        <div className="alert alert-warning" role="status">
+          This plan does not pay the debt off: {money(result.remainingBalance)} is still owed after{' '}
+          {monthsLabel(result.schedule.length)}. Increase the term or the monthly payment.
+        </div>
+      )}
+
       <div className="grid grid-4">
-        <StatCard label="Months to payoff" value={monthsLabel(result.monthsToPayoff)} />
+        <StatCard
+          label="Months to payoff"
+          value={repaid ? monthsLabel(result.monthsToPayoff) : 'Not repaid'}
+        />
         <StatCard label="Interest paid" value={money(result.totalInterestPaid)} />
         <StatCard label="Principal paid" value={money(result.totalPrincipalPaid)} />
-        <StatCard
-          label="Payoff date"
-          value={shortDate(result.payoffDate)}
-          hint={`Completed ${dateTime(result.completedAt)}`}
-        />
+        {repaid ? (
+          <StatCard
+            label="Payoff date"
+            value={shortDate(result.payoffDate)}
+            hint={`Finished ${dateTime(result.completedAt)}`}
+          />
+        ) : (
+          <StatCard
+            label="Remaining balance"
+            value={money(result.remainingBalance)}
+            tone="warning"
+            hint={`Stopped after ${monthsLabel(result.schedule.length)}`}
+          />
+        )}
       </div>
 
       <div className="section-head">

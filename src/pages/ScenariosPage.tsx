@@ -197,12 +197,12 @@ export function ScenariosPage() {
             <li>Strategy name — pre-selects the strategy dropdown.</li>
             <li>Extra payment and lump sum — prefill the simulator.</li>
             <li>
-              Balance, APR and term are <strong>not</strong> stored, so you still enter those.
+              Balances and APRs come from the accounts you select; the horizon is re-entered for
+              each run.
             </li>
           </ul>
           <p className="muted small">
-            Simulation results are never written back to a scenario, and there is no
-            <code> GET /api/assemble/results/{'{id}'}</code> to reopen a past run.
+            Runs are persisted by the API. A scenario stores reusable plan inputs, not results.
           </p>
         </Section>
       </div>
