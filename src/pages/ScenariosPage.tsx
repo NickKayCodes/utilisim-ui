@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 import type { FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { archiveApi } from '../services/archive';
 import { useApiResource } from '../lib/use-api-resource';
 import { errorMessage } from '../lib/api';
@@ -207,7 +207,7 @@ export function ScenariosPage() {
         </Section>
       </div>
 
-      <Section title="Saved scenarios" description="Shared across all users (see note above).">
+      <Section title="Saved scenarios" description="Private to your account — only you can see, change or delete them.">
         {scenarios.loading ? (
           <Spinner label="Loading scenarios…" />
         ) : rows.length === 0 ? (
@@ -231,7 +231,11 @@ export function ScenariosPage() {
               <tbody>
                 {rows.map((scenario) => (
                   <tr key={scenario.id}>
-                    <td className="cell-strong">{scenario.name}</td>
+                    <td className="cell-strong">
+                      <Link to={`/app/scenarios/${encodeURIComponent(scenario.id)}`}>
+                        {scenario.name}
+                      </Link>
+                    </td>
                     <td>
                       <Badge tone="info">{strategyLabel(scenario.strategy)}</Badge>
                     </td>

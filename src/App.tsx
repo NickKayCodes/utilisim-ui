@@ -6,6 +6,7 @@ import { RegisterPage } from './pages/RegisterPage';
 import { DashboardPage } from './pages/DashboardPage';
 import { AccountsPage } from './pages/AccountsPage';
 import { ScenariosPage } from './pages/ScenariosPage';
+import { ScenarioDetailPage } from './pages/ScenarioDetailPage';
 import { SimulatePage } from './pages/SimulatePage';
 import { ComparePage } from './pages/ComparePage';
 
@@ -26,6 +27,7 @@ export function App() {
         <Route path="dashboard" element={<DashboardPage />} />
         <Route path="accounts" element={<AccountsPage />} />
         <Route path="scenarios" element={<ScenariosPage />} />
+        <Route path="scenarios/:id" element={<ScenarioDetailPage />} />
         <Route path="simulate" element={<SimulatePage />} />
         <Route path="compare" element={<ComparePage />} />
       </Route>

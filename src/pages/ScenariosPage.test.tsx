@@ -32,6 +32,7 @@ function renderScenarios() {
     <MemoryRouter initialEntries={['/app/scenarios']}>
       <Routes>
         <Route path="/app/scenarios" element={<ScenariosPage />} />
+        <Route path="/app/scenarios/:id" element={<div>scenario detail page</div>} />
         <Route path="/app/simulate" element={<div>simulate page</div>} />
       </Routes>
     </MemoryRouter>,
@@ -57,8 +58,27 @@ describe('ScenariosPage', () => {
     ).toBe(true);
     expect(screen.getByText('$100.00')).toBeInTheDocument();
     expect(screen.getByText('$500.00')).toBeInTheDocument();
-    expect(screen.getByText(/private to your account/)).toBeInTheDocument();
+    expect(
+      screen.getByText('Private to your account — only you can see, change or delete them.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Shared across all users/i)).not.toBeInTheDocument();
     expect(screen.getByText(/2026/)).toBeInTheDocument();
+  });
+
+  it('renders each scenario name as a link to its detail page', async () => {
+    const user = userEvent.setup();
+    renderScenarios();
+
+    await waitFor(() => expect(screen.getByText('Aggressive payoff')).toBeInTheDocument());
+
+    const nameLink = screen.getByRole('link', { name: 'Aggressive payoff' });
+    expect(nameLink).toHaveAttribute('href', '/app/scenarios/s1');
+
+    nameLink.focus();
+    expect(nameLink).toHaveFocus();
+
+    await user.click(nameLink);
+    expect(await screen.findByText('scenario detail page')).toBeInTheDocument();
   });
 
   it('shows an empty state', async () => {
